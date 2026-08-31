@@ -1,0 +1,15 @@
+numpy
+scipy
+pandas
+scikit-learn
+open3d
+laspy[lazrs]
+trimesh
+rasterio
+opencv-python
+mplstereonet
+matplotlib
+plotly
+streamlit
+pyyaml
+shapely

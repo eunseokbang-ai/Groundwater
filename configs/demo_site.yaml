@@ -1,0 +1,54 @@
+# DEMO config: synthetic data (3 known joint sets + a synthetic orthomosaic
+# with 3 lineaments) used to smoke-test the pipeline / dashboard before real
+# drone data is available. Regenerate with the scripts referenced in the
+# project plan, or just run this as-is to see the pipeline work end to end.
+
+site_name: demo_site
+
+paths:
+  point_cloud: data/raw/demo_site/rgb_photogrammetry/pointcloud.ply
+  mesh: null
+  orthomosaic: data/raw/demo_site/rgb_photogrammetry/orthomosaic.tif
+  lidar_point_cloud: null
+  thermal_orthomosaic: null
+  field_measurements: data/raw/demo_site/field/scanline_joints.csv
+  output_dir: data/processed/demo_site
+
+# Coordinate reference system of the inputs above (informational; all inputs
+# must already share this CRS -- see registration module for Phase 2).
+crs: EPSG:5186
+
+preprocessing:
+  # Voxel size (meters) used to downsample the point cloud before normal
+  # estimation / orientation clustering. Should be well below the smallest
+  # joint spacing you expect to resolve.
+  voxel_size: 0.02
+  # Optional axis-aligned bounding box crop [xmin, ymin, zmin, xmax, ymax, zmax]
+  # to isolate the excavation face from surrounding terrain. Null = no crop.
+  crop_bbox: null
+
+normals:
+  # Neighborhood radius (meters) for normal estimation.
+  search_radius: 0.1
+  max_nn: 30
+
+orientation_clustering:
+  # DBSCAN over unit normal vectors. eps is a chord-length on the unit
+  # sphere; ~0.26 corresponds to roughly 15 degrees for small angles.
+  eps: 0.26
+  min_samples: 30
+
+spatial_clustering:
+  # DBSCAN over xyz within each orientation cluster, to split a joint set
+  # into individual physical discontinuity patches.
+  eps: 0.15
+  min_samples: 20
+
+patches:
+  min_points: 30
+
+trace_mapping:
+  canny_low: 50
+  canny_high: 150
+  hough_min_line_length_px: 20
+  hough_max_line_gap_px: 5

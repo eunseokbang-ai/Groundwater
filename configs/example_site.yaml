@@ -1,0 +1,56 @@
+# Site configuration for the discontinuity-extraction pipeline.
+# Copy this file per site (e.g. configs/site_a.yaml) and edit the paths below.
+
+site_name: example_site
+
+paths:
+  # RGB photogrammetry outputs (Pix4D / Metashape). LiDAR + thermal are added
+  # in Phase 2 once acquired -- leave blank until then.
+  point_cloud: data/raw/example_site/rgb_photogrammetry/pointcloud.las
+  mesh: data/raw/example_site/rgb_photogrammetry/model.obj
+  orthomosaic: data/raw/example_site/rgb_photogrammetry/orthomosaic.tif
+  lidar_point_cloud: null
+  thermal_orthomosaic: null
+  # Field-measured joint orientations for validation (scanline / borehole).
+  # CSV columns: id,dip,dip_direction,x,y,z (x,y,z optional)
+  field_measurements: data/raw/example_site/field/scanline_joints.csv
+  output_dir: data/processed/example_site
+
+# Coordinate reference system of the inputs above (informational; all inputs
+# must already share this CRS -- see registration module for Phase 2).
+crs: EPSG:5186
+
+preprocessing:
+  # Voxel size (meters) used to downsample the point cloud before normal
+  # estimation / orientation clustering. Should be well below the smallest
+  # joint spacing you expect to resolve.
+  voxel_size: 0.02
+  # Optional axis-aligned bounding box crop [xmin, ymin, zmin, xmax, ymax, zmax]
+  # to isolate the excavation face from surrounding terrain. Null = no crop.
+  crop_bbox: null
+
+normals:
+  # Neighborhood radius (meters) for normal estimation.
+  search_radius: 0.1
+  max_nn: 30
+
+orientation_clustering:
+  # DBSCAN over unit normal vectors. eps is a chord-length on the unit
+  # sphere; ~0.26 corresponds to roughly 15 degrees for small angles.
+  eps: 0.26
+  min_samples: 30
+
+spatial_clustering:
+  # DBSCAN over xyz within each orientation cluster, to split a joint set
+  # into individual physical discontinuity patches.
+  eps: 0.15
+  min_samples: 20
+
+patches:
+  min_points: 30
+
+trace_mapping:
+  canny_low: 50
+  canny_high: 150
+  hough_min_line_length_px: 20
+  hough_max_line_gap_px: 5

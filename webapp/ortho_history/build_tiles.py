@@ -12,6 +12,10 @@ extent (in EPSG:5186, Korea 2000 / Central Belt) plus a 50 m margin, so an image
 transform is centred on that extent at its nominal GSD. A sheet that does carry a transform (the
 2012 one here) is used as-is and serves as the reference for a phase-correlation alignment check.
 
+Screen captures of older aerial photos named by year (`1973.png`) are added for the years that have
+no orthophoto; they are georeferenced against the orthophotos by captures.py (LoFTR matching, needs
+torch + kornia) or by a world file next to them (`1973.pgw`, EPSG:5186).
+
 Usage:
     .venv\\Scripts\\python.exe webapp\\ortho_history\\build_tiles.py [--src 과거정사영상] [--force]
 """
@@ -108,6 +112,20 @@ def read_boundaries(folder: Path) -> list:
     return features
 
 
+def find_captures(folder: Path) -> list:
+    return [{"path": f, "year": int(f.stem)} for f in sorted(folder.iterdir())
+            if f.suffix.lower() in (".png", ".jpg", ".jpeg") and re.fullmatch(r"\d{4}", f.stem)]
+
+
+def stamp(*paths) -> str:
+    return "|".join(f"{p.stat().st_size}-{int(p.stat().st_mtime)}" for p in paths if p.exists())
+
+
+def max_zoom_for(gsd: float, lat: float = 36.0) -> int:
+    """Web Mercator zoom whose ground pixel size is closest to the image GSD."""
+    return int(np.clip(round(math.log2(156543.03 * math.cos(math.radians(lat)) / gsd)), MIN_ZOOM, 19))
+
+
 def find_sheets(folder: Path) -> list:
     sheets = []
     for f in sorted(folder.glob("*.tif")):
@@ -195,6 +213,130 @@ def shift_vs_reference(ref_edges, rgba, src_transform, bounds, res=1.0):
     return sx * res, -sy * res, response
 
 
+# --- aerial-photo captures ----------------------------------------------------------------------
+
+def gray_reference(sheet, bounds, res=1.0):
+    """An orthophoto resampled to `res` over `bounds`, as a captures.Reference."""
+    import captures
+
+    x0, y0, x1, y1 = bounds
+    grid = Affine(res, 0, x0, 0, -res, y1)
+    dst = np.zeros((3, int((y1 - y0) / res), int((x1 - x0) / res)), np.uint8)
+    reproject(load_rgba(sheet["path"])[:3], dst, src_transform=sheet["transform"], src_crs=SHEET_CRS,
+              dst_transform=grid, dst_crs=SHEET_CRS, resampling=Resampling.average)
+    return captures.Reference(sheet["year"], cv2.cvtColor(np.moveaxis(dst, 0, -1), cv2.COLOR_RGB2GRAY), grid)
+
+
+def site_bounds_tm(boundaries, sheets, buffer_m=300.0):
+    if not boundaries:
+        return sheet_bounds_tm(sheets[0]["sheet"])
+    lon, lat = zip(*[c for f in boundaries for c in f["geometry"]["coordinates"][0]])
+    xs, ys = transform_coords("EPSG:4326", SHEET_CRS, lon, lat)
+    return min(xs) - buffer_m, min(ys) - buffer_m, max(xs) + buffer_m, max(ys) + buffer_m
+
+
+def build_captures(src: Path, sheets, boundaries, previous, previous_skipped, force):
+    """Tiles + layer entries for aerial-photo captures in years without an orthophoto.
+
+    Returns (layers, skipped, duplicate_years).
+    """
+    import captures
+
+    found = find_captures(src)
+    if not found:
+        return [], [], []
+    sheet_years = {s["year"] for s in sheets}
+    duplicates = sorted(c["year"] for c in found if c["year"] in sheet_years)
+    caps = [c for c in found if c["year"] not in sheet_years]
+    for c in caps:
+        world = [c["path"].with_suffix(e) for e in (".pgw", ".pngw", ".jgw", ".wld") if c["path"].with_suffix(e).exists()]
+        c["world"] = captures.read_world_file(c["path"])
+        c["stamp"] = stamp(c["path"], *world)
+        prev = previous.get(c["year"], {})
+        skip = previous_skipped.get(c["year"], {})
+        c["prev"] = prev if (not force and prev.get("kind") == "capture" and prev.get("source_stamp") == c["stamp"]
+                             and (OUT_DIR / "tiles" / str(c["year"])).exists()) else None
+        c["settled"] = c["prev"] is not None or (not force and skip.get("source_stamp") == c["stamp"])
+    if duplicates:
+        print(f"Captures skipped because an orthophoto exists for the year: {duplicates}")
+
+    results, rgbs, mask, failure = {}, {}, None, "정사영상과의 대응점이 부족해 자동 정합 실패"
+    if not all(c["settled"] for c in caps):
+        rgbs = {c["year"]: captures.load_rgb(c["path"]) for c in found}
+        # every capture (duplicates too) helps to find the viewer icons they all share
+        mask = captures.overlay_mask(list(rgbs.values()))
+        auto = [c for c in caps if c["world"] is None]
+        if auto:
+            print(f"Registering aerial-photo captures {[c['year'] for c in auto]} against the orthophotos...", flush=True)
+            by_year = sorted(sheets, key=lambda s: s["year"])
+            first = by_year[0]
+            second = next((s for s in by_year if s["year"] >= first["year"] + 3), None)
+            bounds = site_bounds_tm(boundaries, sheets)
+            try:
+                refs = [gray_reference(s, sheet_bounds_tm(s["sheet"])) for s in (first, second) if s]
+                gray = {c["year"]: cv2.cvtColor(captures.clean_capture(rgbs[c["year"]], mask), cv2.COLOR_RGB2GRAY)
+                        for c in auto}
+                results = captures.register(gray, mask, refs, bounds, log=print)
+            except ImportError as e:
+                failure = f"자동 정합 모듈 없음 ({e.name}); pip install torch kornia"
+                print(f"    {failure}")
+
+    layers, skipped = [], []
+    for c in caps:
+        year = c["year"]
+        if c["prev"] is not None:
+            print(f"{year}: {c['path'].name}  capture up to date, skipped")
+            layers.append(c["prev"])
+            continue
+        if c["world"] is not None:
+            reg = {"transform": c["world"], "method": "월드파일 (수동 정합)", "confidence": "수동",
+                   "model": "affine", "inliers": None, "rms_m": None}
+        else:
+            reg = results.get(year)
+        if reg is None:
+            reason = previous_skipped.get(year, {}).get("reason", failure) if c["settled"] else failure
+            skipped.append({"year": year, "file": c["path"].name, "reason": reason, "source_stamp": c["stamp"]})
+            if not c["settled"]:
+                print(f"{year}: {c['path'].name}  not placed: {reason}")
+            continue
+        t = reg["transform"]
+        rgb = captures.clean_capture(rgbs[year], mask)
+        h, w = rgb.shape[:2]
+        rgba = np.concatenate([np.moveaxis(rgb, -1, 0), np.full((1, h, w), 255, np.uint8)])
+        gsd = math.sqrt(abs(t.a * t.e - t.b * t.d))
+        max_zoom = max_zoom_for(gsd)
+        out = OUT_DIR / "tiles" / str(year)
+        if out.exists():
+            shutil.rmtree(out)
+        print(f"{year}: {c['path'].name}  {w}x{h} px  ~{gsd:.2f} m/px  {reg['method']}", flush=True)
+        n = write_tiles(rgba, t, out, range(MIN_ZOOM, max_zoom + 1))
+        print(f"    wrote {n} tiles", flush=True)
+        xs, ys = zip(*[t * p for p in [(0, 0), (w, 0), (w, h), (0, h)]])
+        lon, lat = transform_coords(SHEET_CRS, "EPSG:4326", xs, ys)
+        layers.append({
+            "year": year,
+            "kind": "capture",
+            "file": c["path"].name,
+            "gsd_m": round(gsd, 2),
+            "georef": "worldfile" if c["world"] is not None else "registered",
+            "tiles": f"tiles/{year}/{{z}}/{{x}}/{{y}}.webp",
+            "min_zoom": MIN_ZOOM,
+            "max_zoom": max_zoom,
+            "bounds": [[min(lat), min(lon)], [max(lat), max(lon)]],
+            "metadata": None,
+            "registration": {
+                "method": reg["method"],
+                "confidence": reg["confidence"],
+                "model": reg["model"],
+                "inliers": reg["inliers"],
+                "rms_m": None if reg["rms_m"] is None else round(reg["rms_m"], 1),
+            },
+            "transform": [round(v, 6) for v in t[:6]],
+            "source_stamp": c["stamp"],
+        })
+    return layers, skipped, duplicates
+
+
 # --- main ---------------------------------------------------------------------------------------
 
 def main():
@@ -221,14 +363,15 @@ def main():
 
     # Tiles are rebuilt only for sheets that are new or whose source file changed since the last run.
     manifest_path = OUT_DIR / "layers.json"
-    previous = {}
+    previous, previous_skipped = {}, {}
     if manifest_path.exists():
-        previous = {d["year"]: d for d in json.loads(manifest_path.read_text(encoding="utf-8"))["layers"]}
+        old = json.loads(manifest_path.read_text(encoding="utf-8"))
+        previous = {d["year"]: d for d in old["layers"]}
+        previous_skipped = {d["year"]: d for d in old.get("skipped_captures", [])}
     for s in sheets:
-        st = s["path"].stat()
-        s["stamp"] = f"{st.st_size}-{int(st.st_mtime)}"
+        s["stamp"] = stamp(s["path"])
         prev = previous.get(s["year"], {})
-        s["todo"] = (args.force or not (OUT_DIR / "tiles" / str(s["year"])).exists()
+        s["todo"] = (args.force or not (OUT_DIR / "tiles" / str(s["year"])).exists() or prev.get("kind") == "capture"
                      or prev.get("file") != s["path"].name or prev.get("source_stamp", s["stamp"]) != s["stamp"])
 
     ref = next((s for s in sheets if s["embedded"]), None)
@@ -244,7 +387,7 @@ def main():
     for s in sheets:
         year, t = s["year"], s["transform"]
         gsd = abs(t.a)
-        max_zoom = 19 if gsd < 0.35 else 18
+        max_zoom = max_zoom_for(gsd)
         out = OUT_DIR / "tiles" / str(year)
         print(f"{year}: {s['path'].name}  {s['size'][0]}x{s['size'][1]} px  GSD {gsd:.3f} m  "
               f"{'embedded' if s['embedded'] else 'from sheet ' + s['sheet']}", flush=True)
@@ -270,6 +413,7 @@ def main():
         m = meta.get(year)
         layers.append({
             "year": year,
+            "kind": "ortho",
             "file": s["path"].name,
             "sheet": s["sheet"],
             "gsd_m": round(gsd, 3),
@@ -283,12 +427,18 @@ def main():
             "source_stamp": s["stamp"],
         })
 
+    capture_layers, skipped, duplicates = build_captures(src, sheets, boundaries, previous, previous_skipped,
+                                                         args.force)
+    layers += capture_layers
+
     unmatched = sorted(set(meta) - {s["year"] for s in sheets})
     manifest = {
         "title": "익산 폐석산 정사영상 변천",
-        "source": "국토지리정보원 정사영상 (1:5,000 도엽)",
+        "source": "국토지리정보원 정사영상 (1:5,000 도엽)·항공사진",
         "reference_year": ref["year"] if ref else None,
         "layers": sorted(layers, key=lambda d: d["year"]),
+        "skipped_captures": skipped,
+        "duplicate_capture_years": duplicates,
         "unmatched_metadata_years": unmatched,
         "boundaries": {"type": "FeatureCollection", "features": boundaries},
     }
@@ -296,6 +446,8 @@ def main():
     print(f"Wrote {manifest_path}")
     if unmatched:
         print(f"Metadata XML without a matching TIF year: {unmatched}")
+    if skipped:
+        print(f"Captures not placed: {[d['year'] for d in skipped]} (add a .pgw world file to place by hand)")
 
 
 if __name__ == "__main__":

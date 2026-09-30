@@ -32,6 +32,7 @@
     text-align: left; line-height: 1.25; }
   .year b { font-size: 16px; }
   .year span { display: block; font-size: 11px; color: var(--muted); }
+  .year.capture { background: #f8f5ef; }
   .year.on { border-color: var(--accent); background: var(--accent-soft); box-shadow: inset 0 0 0 1px var(--accent); }
   .year.right-on { border-color: #d9480f; box-shadow: inset 0 0 0 1px #d9480f; }
   .row { display: flex; align-items: center; gap: 8px; margin: 6px 0; font-size: 13px; }
@@ -94,6 +95,7 @@
         <button id="next" title="다음 시기 (→)">다음 ▶</button>
       </div>
       <div class="hint">키보드 ← → 로도 넘길 수 있습니다.</div>
+      <div class="hint warn" id="skipped" hidden></div>
     </section>
 
     <section id="compare-controls" hidden>
@@ -218,6 +220,16 @@ function renderMeta(indices) {
     const d = layers[i], m = d.metadata;
     if (indices.length > 1) rows.push(['', `<b>${d.year}년</b>`]);
     else rows.push(['촬영년도', `<b>${d.year}년</b>`]);
+    if (d.kind === 'capture') {
+      const r = d.registration;
+      const conf = r.confidence === '낮음' ? `<span class="warn">낮음 (수십 m 어긋날 수 있음)</span>` : r.confidence;
+      rows.push(['자료', '항공사진 (국토정보플랫폼 화면 캡처)'], ['해상도', `약 ${d.gsd_m} m/픽셀`],
+        ['위치 정합', r.method], ['신뢰도', conf]);
+      if (r.inliers) rows.push(['정합 근거', `대응점 ${r.inliers}개 · 잔차 ${r.rms_m} m`]);
+      rows.push(['참고', '정사보정 전 단일 사진이라 지형 기복에 따른 왜곡이 남아 있습니다.'],
+        ['파일', `<span style="font-size:11px">${d.file}</span>`]);
+      continue;
+    }
     rows.push(['해상도', `${d.gsd_m} m/픽셀`]);
     if (m) {
       rows.push(['제작일자', m['제작일자'] || '-'], ['사업지구', m['사업지구명'] || '-'], ['제작사', m['입력회사'] || '-']);
@@ -291,9 +303,15 @@ async function init() {
   layers = manifest.layers;
   $('source').textContent = `${manifest.source} · ${layers.length}개 시기`;
 
+  const yearNote = (d) => d.kind === 'capture'
+    ? `항공사진${d.registration.confidence === '낮음' ? ' · 위치 대략' : ''}`
+    : `${d.gsd_m < 0.35 ? '25 cm' : '51 cm'} 정사영상${d.metadata ? '' : ' · XML 없음'}`;
   $('years').innerHTML = layers.map((d, i) =>
-    `<button class="year" data-i="${i}"><b>${d.year}</b><span>${d.gsd_m < 0.35 ? '25 cm' : '51 cm'}` +
-    `${d.metadata ? '' : ' · XML 없음'}</span></button>`).join('');
+    `<button class="year${d.kind === 'capture' ? ' capture' : ''}" data-i="${i}"><b>${d.year}</b>` +
+    `<span>${yearNote(d)}</span></button>`).join('');
+  const skipped = manifest.skipped_captures || [];
+  $('skipped').hidden = !skipped.length;
+  $('skipped').innerHTML = skipped.map(s => `${s.year}년 항공사진은 위치를 맞추지 못해 제외했습니다 (${s.reason}).`).join('<br>');
   document.querySelectorAll('.year').forEach(b => b.onclick = () => { state.index = +b.dataset.i; render(); });
   const options = layers.map((d, i) => `<option value="${i}">${d.year}년</option>`).join('');
   $('left-year').innerHTML = $('right-year').innerHTML = options;

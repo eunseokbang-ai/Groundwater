@@ -12,3 +12,9 @@ plotly
 streamlit
 pyyaml
 shapely
+pillow
+# aerial-photo capture registration (webapp/ortho_history/captures.py); CPU wheel:
+#   pip install torch --index-url https://download.pytorch.org/whl/cpu
+torch
+kornia
+truststore

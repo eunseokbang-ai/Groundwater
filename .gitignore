@@ -3,5 +3,8 @@ __pycache__/
 *.pyc
 *.egg-info/
 data/processed/
+webapp/ortho_history/tiles/
+webapp/ortho_history/layers.json
+과거정사영상/
 .pytest_cache/
 .claude/scheduled_tasks.lock

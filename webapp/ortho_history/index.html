@@ -1,0 +1,361 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>정사영상 변천 뷰어</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<style>
+  :root {
+    --bg: #f8fafc; --panel: #ffffff; --text: #1f2937; --muted: #6b7280; --line: #e5e7eb;
+    --accent: #1d6fc2; --accent-soft: #e8f1fb; --warn: #b45309;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text);
+    font-family: 'Malgun Gothic', 'Apple SD Gothic Neo', 'Noto Sans KR', system-ui, sans-serif; }
+  #app { display: flex; height: 100%; }
+  aside { width: 330px; flex: none; overflow-y: auto; background: var(--panel); border-right: 1px solid var(--line);
+    padding: 16px 16px 24px; }
+  #map { flex: 1; position: relative; }
+  h1 { font-size: 18px; margin: 0 0 2px; }
+  .sub { color: var(--muted); font-size: 12px; margin-bottom: 14px; }
+  section { border-top: 1px solid var(--line); padding: 12px 0; }
+  section h2 { font-size: 13px; margin: 0 0 8px; color: var(--muted); font-weight: 700; letter-spacing: .02em; }
+  select, button { font: inherit; font-size: 13px; }
+  select { width: 100%; padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; background: #fff; }
+  .seg { display: flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+  .seg button { flex: 1; border: 0; background: #fff; padding: 7px 0; cursor: pointer; }
+  .seg button.on { background: var(--accent); color: #fff; font-weight: 700; }
+  #years { display: grid; grid-template-columns: repeat(2, 1fr); gap: 6px; }
+  .year { border: 1px solid var(--line); border-radius: 8px; background: #fff; padding: 6px 8px; cursor: pointer;
+    text-align: left; line-height: 1.25; }
+  .year b { font-size: 16px; }
+  .year span { display: block; font-size: 11px; color: var(--muted); }
+  .year.on { border-color: var(--accent); background: var(--accent-soft); box-shadow: inset 0 0 0 1px var(--accent); }
+  .year.right-on { border-color: #d9480f; box-shadow: inset 0 0 0 1px #d9480f; }
+  .row { display: flex; align-items: center; gap: 8px; margin: 6px 0; font-size: 13px; }
+  .row input[type=range] { flex: 1; }
+  .row label { display: flex; align-items: center; gap: 6px; cursor: pointer; }
+  .nav { display: flex; gap: 6px; margin-top: 8px; }
+  .nav button { flex: 1; border: 1px solid var(--line); background: #fff; border-radius: 6px; padding: 6px 0; cursor: pointer; }
+  .nav button.on { background: var(--accent); color: #fff; border-color: var(--accent); }
+  .hint { font-size: 11px; color: var(--muted); margin-top: 6px; }
+  .compare-pick { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .compare-pick label { font-size: 12px; color: var(--muted); }
+  dl { display: grid; grid-template-columns: 74px 1fr; gap: 3px 8px; margin: 0; font-size: 12px; }
+  dt { color: var(--muted); }
+  dd { margin: 0; word-break: keep-all; }
+  .warn { color: var(--warn); }
+  .swatch { width: 18px; height: 0; border-top: 3px solid; display: inline-block; }
+
+  .badge { position: absolute; top: 12px; z-index: 900; background: rgba(17, 24, 39, .82); color: #fff;
+    font-size: 22px; font-weight: 700; padding: 4px 14px; border-radius: 8px; pointer-events: none; }
+  #badge-main { left: 50%; transform: translateX(-50%); }
+  #badge-left { left: 12px; background: rgba(29, 111, 194, .9); }
+  #badge-right { right: 12px; background: rgba(217, 72, 15, .9); }
+  #swipe { position: absolute; top: 0; bottom: 0; width: 0; z-index: 800; }
+  #swipe::before { content: ''; position: absolute; top: 0; bottom: 0; left: -1.5px; width: 3px; background: #fff;
+    box-shadow: 0 0 4px rgba(0,0,0,.6); }
+  #swipe .handle { position: absolute; top: 50%; left: -18px; width: 36px; height: 36px; margin-top: -18px;
+    border-radius: 50%; background: #fff; box-shadow: 0 1px 5px rgba(0,0,0,.5); cursor: ew-resize;
+    display: grid; place-items: center; font-size: 14px; color: #374151; touch-action: none; user-select: none; }
+  #coords { position: absolute; left: 12px; bottom: 26px; z-index: 900; background: rgba(255,255,255,.88);
+    font-size: 12px; padding: 2px 8px; border-radius: 4px; pointer-events: none; font-variant-numeric: tabular-nums; }
+  [hidden] { display: none !important; }
+
+  @media (max-width: 760px) {
+    #app { flex-direction: column-reverse; }
+    aside { width: 100%; height: 44%; border-right: 0; border-top: 1px solid var(--line); }
+    .badge { font-size: 17px; }
+  }
+</style>
+</head>
+<body>
+<div id="app">
+  <aside>
+    <h1>익산 폐석산 정사영상 변천</h1>
+    <div class="sub" id="source">국토지리정보원 정사영상</div>
+
+    <section>
+      <h2>보기 방식</h2>
+      <div class="seg" id="mode">
+        <button data-mode="single" class="on">한 시기</button>
+        <button data-mode="compare">두 시기 비교</button>
+      </div>
+    </section>
+
+    <section id="single-controls">
+      <h2>촬영 시기</h2>
+      <div id="years"></div>
+      <div class="nav">
+        <button id="prev" title="이전 시기 (←)">◀ 이전</button>
+        <button id="play" title="시기별 자동 넘김">▶ 재생</button>
+        <button id="next" title="다음 시기 (→)">다음 ▶</button>
+      </div>
+      <div class="hint">키보드 ← → 로도 넘길 수 있습니다.</div>
+    </section>
+
+    <section id="compare-controls" hidden>
+      <h2>비교할 시기</h2>
+      <div class="compare-pick">
+        <div><label>왼쪽</label><select id="left-year"></select></div>
+        <div><label>오른쪽</label><select id="right-year"></select></div>
+      </div>
+      <div class="hint">지도 가운데의 흰 막대를 좌우로 끌어 비교합니다.</div>
+    </section>
+
+    <section>
+      <h2>표시 설정</h2>
+      <div class="row"><span>투명도</span><input type="range" id="opacity" min="0" max="100" value="100"><span id="opacity-val">100%</span></div>
+      <div class="row"><span style="width:52px">배경지도</span>
+        <select id="basemap">
+          <option value="esri">위성영상 (Esri)</option>
+          <option value="osm">일반지도 (OSM)</option>
+          <option value="carto">밝은 지도 (Carto)</option>
+          <option value="none">없음</option>
+        </select>
+      </div>
+      <div id="boundary-toggles"></div>
+      <div class="nav"><button id="fit">현장 범위로 이동</button></div>
+    </section>
+
+    <section>
+      <h2>영상 정보</h2>
+      <dl id="meta"></dl>
+    </section>
+  </aside>
+  <div id="map">
+    <div class="badge" id="badge-main"></div>
+    <div class="badge" id="badge-left" hidden></div>
+    <div class="badge" id="badge-right" hidden></div>
+    <div id="swipe" hidden><div class="handle">◀▶</div></div>
+    <div id="coords"></div>
+  </div>
+</div>
+
+<script>
+const BASEMAPS = {
+  esri: ['https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+         // z19 over this rural site returns "Map data not yet available" placeholders, so stop at 18.
+         {maxNativeZoom: 18, attribution: 'Imagery &copy; Esri, Maxar, Earthstar Geographics'}],
+  osm: ['https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+        {maxNativeZoom: 19, attribution: '&copy; OpenStreetMap contributors'}],
+  carto: ['https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png',
+          {maxNativeZoom: 20, subdomains: 'abcd', attribution: '&copy; OpenStreetMap &copy; CARTO'}],
+};
+const BOUNDARY_STYLES = [
+  {color: '#facc15', weight: 3, dashArray: '8 6', fill: false},
+  {color: '#ef4444', weight: 3, fill: false},
+  {color: '#22d3ee', weight: 3, fill: false},
+];
+const BLANK = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7';
+
+const $ = (id) => document.getElementById(id);
+const map = L.map('map', {zoomControl: true, minZoom: 8, maxZoom: 21});
+L.control.scale({imperial: false}).addTo(map);
+map.createPane('ortho-left').style.zIndex = 250;
+map.createPane('ortho-right').style.zIndex = 260;
+
+const state = {mode: 'single', index: 0, left: 0, right: 0, opacity: 1, divider: 0.5, playing: null};
+let layers = [], tileLayers = {}, basemap = null, boundaryLayers = [];
+
+function tileLayer(i, pane) {
+  const key = `${i}-${pane}`;
+  if (!tileLayers[key]) {
+    const d = layers[i];
+    tileLayers[key] = L.tileLayer(d.tiles, {
+      pane, minNativeZoom: d.min_zoom, maxNativeZoom: d.max_zoom, maxZoom: 21,
+      bounds: L.latLngBounds(d.bounds), errorTileUrl: BLANK, attribution: '정사영상 &copy; 국토지리정보원',
+    });
+  }
+  return tileLayers[key];
+}
+
+function setBasemap(name) {
+  if (basemap) map.removeLayer(basemap);
+  basemap = null;
+  if (BASEMAPS[name]) {
+    const [url, opts] = BASEMAPS[name];
+    basemap = L.tileLayer(url, {...opts, maxZoom: 21}).addTo(map);
+  }
+}
+
+function render() {
+  const compare = state.mode === 'compare';
+  const want = compare
+    ? [[state.left, 'ortho-left'], [state.right, 'ortho-right']]
+    : [[state.index, 'ortho-left']];
+  const wantKeys = new Set(want.map(([i, p]) => `${i}-${p}`));
+  for (const [key, lyr] of Object.entries(tileLayers)) {
+    if (!wantKeys.has(key) && map.hasLayer(lyr)) map.removeLayer(lyr);
+  }
+  for (const [i, pane] of want) {
+    const lyr = tileLayer(i, pane);
+    lyr.setOpacity(state.opacity);
+    if (!map.hasLayer(lyr)) lyr.addTo(map);
+  }
+
+  $('single-controls').hidden = compare;
+  $('compare-controls').hidden = !compare;
+  $('swipe').hidden = !compare;
+  $('badge-main').hidden = compare;
+  $('badge-left').hidden = $('badge-right').hidden = !compare;
+  $('badge-main').textContent = `${layers[state.index].year}년`;
+  $('badge-left').textContent = `◀ ${layers[state.left].year}년`;
+  $('badge-right').textContent = `${layers[state.right].year}년 ▶`;
+  document.querySelectorAll('#mode button').forEach(b => b.classList.toggle('on', b.dataset.mode === state.mode));
+  document.querySelectorAll('.year').forEach((b, i) => b.classList.toggle('on', i === state.index));
+  $('left-year').value = state.left;
+  $('right-year').value = state.right;
+  renderMeta(compare ? [state.left, state.right] : [state.index]);
+  updateClip();
+}
+
+function renderMeta(indices) {
+  const rows = [];
+  for (const i of indices) {
+    const d = layers[i], m = d.metadata;
+    if (indices.length > 1) rows.push(['', `<b>${d.year}년</b>`]);
+    else rows.push(['촬영년도', `<b>${d.year}년</b>`]);
+    rows.push(['해상도', `${d.gsd_m} m/픽셀`]);
+    if (m) {
+      rows.push(['제작일자', m['제작일자'] || '-'], ['사업지구', m['사업지구명'] || '-'], ['제작사', m['입력회사'] || '-']);
+    } else {
+      rows.push(['메타데이터', '<span class="warn">해당 연도 XML 없음</span>']);
+    }
+    const s = d.shift_vs_reference;
+    const georef = d.georef === 'embedded' ? '파일 내 좌표 (기준 영상)'
+      : `도엽(${d.sheet}) 범위로 복원` + (s ? ` · 기준 대비 ${Math.hypot(s.dx_m, s.dy_m).toFixed(1)} m` : '');
+    rows.push(['위치 정보', georef], ['파일', `<span style="font-size:11px">${d.file}</span>`]);
+  }
+  $('meta').innerHTML = rows.map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join('');
+}
+
+function updateClip() {
+  const left = map.getPane('ortho-left'), right = map.getPane('ortho-right');
+  if (state.mode !== 'compare') { left.style.clip = right.style.clip = ''; return; }
+  const size = map.getSize();
+  const nw = map.containerPointToLayerPoint([0, 0]);
+  const se = map.containerPointToLayerPoint(size);
+  const x = map.containerPointToLayerPoint([size.x * state.divider, 0]).x;
+  left.style.clip = `rect(${nw.y}px, ${x}px, ${se.y}px, ${nw.x}px)`;
+  right.style.clip = `rect(${nw.y}px, ${se.x}px, ${se.y}px, ${x}px)`;
+  $('swipe').style.left = `${size.x * state.divider}px`;
+}
+
+function step(delta) {
+  state.index = (state.index + delta + layers.length) % layers.length;
+  render();
+}
+
+function togglePlay() {
+  if (state.playing) {
+    clearInterval(state.playing);
+    state.playing = null;
+  } else {
+    state.playing = setInterval(() => step(1), 1600);
+  }
+  $('play').classList.toggle('on', !!state.playing);
+  $('play').textContent = state.playing ? '■ 정지' : '▶ 재생';
+}
+
+function fitSite() {
+  const b = boundaryLayers.length ? L.featureGroup(boundaryLayers).getBounds() : L.latLngBounds(layers[0].bounds);
+  map.fitBounds(b, {padding: [20, 20]});
+}
+
+function initSwipe() {
+  const handle = document.querySelector('#swipe .handle');
+  L.DomEvent.disableClickPropagation($('swipe'));
+  let dragging = false;
+  handle.addEventListener('pointerdown', (e) => { dragging = true; handle.setPointerCapture(e.pointerId); map.dragging.disable(); });
+  handle.addEventListener('pointermove', (e) => {
+    if (!dragging) return;
+    const rect = map.getContainer().getBoundingClientRect();
+    state.divider = Math.min(0.98, Math.max(0.02, (e.clientX - rect.left) / rect.width));
+    updateClip();
+  });
+  const stop = () => { dragging = false; map.dragging.enable(); };
+  handle.addEventListener('pointerup', stop);
+  handle.addEventListener('pointercancel', stop);
+}
+
+async function init() {
+  const res = await fetch('layers.json', {cache: 'no-cache'});
+  if (!res.ok) {
+    document.body.innerHTML = '<p style="padding:24px">layers.json이 없습니다. build_tiles.py를 먼저 실행하세요.</p>';
+    return;
+  }
+  const manifest = await res.json();
+  layers = manifest.layers;
+  $('source').textContent = `${manifest.source} · ${layers.length}개 시기`;
+
+  $('years').innerHTML = layers.map((d, i) =>
+    `<button class="year" data-i="${i}"><b>${d.year}</b><span>${d.gsd_m < 0.35 ? '25 cm' : '51 cm'}` +
+    `${d.metadata ? '' : ' · XML 없음'}</span></button>`).join('');
+  document.querySelectorAll('.year').forEach(b => b.onclick = () => { state.index = +b.dataset.i; render(); });
+  const options = layers.map((d, i) => `<option value="${i}">${d.year}년</option>`).join('');
+  $('left-year').innerHTML = $('right-year').innerHTML = options;
+
+  const features = manifest.boundaries.features;
+  $('boundary-toggles').innerHTML = features.map((f, i) =>
+    `<div class="row"><label><input type="checkbox" data-i="${i}" checked>` +
+    `<span class="swatch" style="border-color:${BOUNDARY_STYLES[i % 3].color};` +
+    `${BOUNDARY_STYLES[i % 3].dashArray ? 'border-top-style:dashed' : ''}"></span>` +
+    `${f.properties.file.replace(/\.km[lz]$/, '')}</label></div>`).join('');
+  boundaryLayers = features.map((f, i) =>
+    L.geoJSON(f, {style: BOUNDARY_STYLES[i % 3], interactive: false}).addTo(map));
+  document.querySelectorAll('#boundary-toggles input').forEach(cb => cb.onchange = () => {
+    const lyr = boundaryLayers[+cb.dataset.i];
+    cb.checked ? lyr.addTo(map) : map.removeLayer(lyr);
+  });
+
+  state.index = layers.length - 1;
+  state.right = layers.length - 1;
+  state.left = 0;
+
+  document.querySelectorAll('#mode button').forEach(b => b.onclick = () => {
+    state.mode = b.dataset.mode;
+    if (state.playing) togglePlay();
+    render();
+  });
+  $('prev').onclick = () => step(-1);
+  $('next').onclick = () => step(1);
+  $('play').onclick = togglePlay;
+  $('left-year').onchange = (e) => { state.left = +e.target.value; render(); };
+  $('right-year').onchange = (e) => { state.right = +e.target.value; render(); };
+  $('opacity').oninput = (e) => {
+    state.opacity = e.target.value / 100;
+    $('opacity-val').textContent = `${e.target.value}%`;
+    render();
+  };
+  $('basemap').onchange = (e) => setBasemap(e.target.value);
+  $('fit').onclick = fitSite;
+  document.addEventListener('keydown', (e) => {
+    if (state.mode !== 'single' || ['SELECT', 'INPUT'].includes(e.target.tagName)) return;
+    if (e.key === 'ArrowLeft') step(-1);
+    if (e.key === 'ArrowRight') step(1);
+  });
+  map.on('move zoom resize', updateClip);
+  map.on('mousemove', (e) => { $('coords').textContent = `${e.latlng.lat.toFixed(6)}°N, ${e.latlng.lng.toFixed(6)}°E`; });
+  initSwipe();
+
+  setBasemap('esri');
+  render();
+  // A tab opened in the background has a 0x0 map; fit once it has a real size.
+  let fitted = false;
+  const fitWhenSized = () => {
+    map.invalidateSize();
+    if (!fitted && map.getSize().x > 0) { fitted = true; fitSite(); }
+  };
+  new ResizeObserver(fitWhenSized).observe(map.getContainer());
+  window.addEventListener('resize', fitWhenSized);
+  document.addEventListener('visibilitychange', fitWhenSized);
+  fitWhenSized();
+}
+
+init();
+</script>
+</body>
+</html>

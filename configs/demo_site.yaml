@@ -28,24 +28,23 @@ preprocessing:
   crop_bbox: null
 
 normals:
-  # Neighborhood radius (meters) for normal estimation.
   search_radius: 0.1
   max_nn: 30
 
-orientation_clustering:
-  # DBSCAN over unit normal vectors. eps is a chord-length on the unit
-  # sphere; ~0.26 corresponds to roughly 15 degrees for small angles.
-  eps: 0.26
-  min_samples: 30
-
-spatial_clustering:
-  # DBSCAN over xyz within each orientation cluster, to split a joint set
-  # into individual physical discontinuity patches.
-  eps: 0.15
-  min_samples: 20
+# See configs/example_site.yaml for what each parameter does.
+orientation_sets:
+  max_surface_variation: 0.1
+  grid_spacing_deg: 1.5
+  bandwidth_deg: 6.0
+  min_separation_deg: 20.0
+  cone_angle_deg: 25.0
+  min_set_fraction: 0.01
+  min_peak_contrast: 3.0
+  max_sets: null
 
 patches:
-  min_points: 30
+  link_distance: 0.05
+  min_patch_points: 30
 
 trace_mapping:
   canny_low: 50

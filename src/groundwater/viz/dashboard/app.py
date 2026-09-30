@@ -99,6 +99,7 @@ def render_tables(result):
             "mean_dip": round(d.mean_dip, 1),
             "mean_dip_direction": round(d.mean_dip_direction, 1),
             "fisher_k": round(d.fisher_k, 1) if np.isfinite(d.fisher_k) else None,
+            "n_points": d.n_points,
             "n_patches": len(d.patches),
             "spacing_mean_m": round(d.spacing_mean, 3) if d.spacing_mean else None,
         }

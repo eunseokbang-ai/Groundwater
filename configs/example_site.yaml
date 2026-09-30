@@ -30,24 +30,36 @@ preprocessing:
   crop_bbox: null
 
 normals:
-  # Neighborhood radius (meters) for normal estimation.
+  # Neighborhood radius (meters) for normal + planarity estimation. Should span
+  # several point spacings but stay smaller than the joint faces you want to see.
   search_radius: 0.1
   max_nn: 30
 
-orientation_clustering:
-  # DBSCAN over unit normal vectors. eps is a chord-length on the unit
-  # sphere; ~0.26 corresponds to roughly 15 degrees for small angles.
-  eps: 0.26
-  min_samples: 30
-
-spatial_clustering:
-  # DBSCAN over xyz within each orientation cluster, to split a joint set
-  # into individual physical discontinuity patches.
-  eps: 0.15
-  min_samples: 20
+orientation_sets:
+  # Coplanarity filter: points whose local surface variation exceeds this are
+  # ignored (vegetation, netting edges, plane intersections). Flat = 0, blob = 0.33.
+  # Raise it if rough joint faces are being discarded.
+  max_surface_variation: 0.1
+  # Stereonet kernel density: grid resolution and smoothing bandwidth.
+  grid_spacing_deg: 1.5
+  bandwidth_deg: 6.0
+  # Two sets closer than this are treated as one.
+  min_separation_deg: 20.0
+  # Poles further than this from every set mean stay unassigned.
+  cone_angle_deg: 25.0
+  # A set needs at least this fraction of planar points...
+  min_set_fraction: 0.01
+  # ...and a density peak this many times the median (background) density.
+  min_peak_contrast: 3.0
+  max_sets: null
 
 patches:
-  min_points: 30
+  # Points closer than link_distance are always joined into one patch; points
+  # more than ~3.5x link_distance apart never are. Keep it >= ~2x point spacing.
+  # Parallel joints closer than ~3.5x this merge, and spacings below it are not
+  # reported (drone resolution cannot resolve them anyway).
+  link_distance: 0.05
+  min_patch_points: 30
 
 trace_mapping:
   canny_low: 50

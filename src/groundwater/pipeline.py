@@ -15,7 +15,7 @@ import pandas as pd
 import yaml
 
 from .discontinuity.geometry import DiscontinuitySet
-from .discontinuity.normals import estimate_normals
+from .discontinuity.normals import estimate_local_geometry
 from .discontinuity.segmentation import extract_discontinuities
 from .discontinuity.trace_mapping import Trace2D, extract_traces, match_traces_to_patches
 from .io.mesh import load_mesh, mesh_to_point_cloud
@@ -60,23 +60,12 @@ def run_pipeline(cfg: dict) -> PipelineResult:
     pcd = crop_bbox(pcd, prep.get("crop_bbox"))
     pcd = downsample(pcd, prep.get("voxel_size", 0.02))
 
-    norm_cfg = cfg.get("normals", {})
-    pcd = estimate_normals(
-        pcd,
-        search_radius=norm_cfg.get("search_radius", 0.1),
-        max_nn=norm_cfg.get("max_nn", 30),
-    )
-
-    oc = cfg.get("orientation_clustering", {})
-    sc = cfg.get("spatial_clustering", {})
-    patch_cfg = cfg.get("patches", {})
+    surface_variation = estimate_local_geometry(pcd, **cfg.get("normals", {}))
     discontinuity_sets, point_labels = extract_discontinuities(
         pcd,
-        orientation_eps=oc.get("eps", 0.26),
-        orientation_min_samples=oc.get("min_samples", 30),
-        spatial_eps=sc.get("eps", 0.15),
-        spatial_min_samples=sc.get("min_samples", 20),
-        min_patch_points=patch_cfg.get("min_points", 30),
+        surface_variation=surface_variation,
+        **cfg.get("orientation_sets", {}),
+        **cfg.get("patches", {}),
     )
 
     traces: list[Trace2D] = []
@@ -132,6 +121,7 @@ def save_results(result: PipelineResult, output_dir: str | Path) -> None:
                 "mean_dip": dset.mean_dip,
                 "mean_dip_direction": dset.mean_dip_direction,
                 "fisher_k": dset.fisher_k,
+                "n_points": dset.n_points,
                 "n_patches": len(dset.patches),
                 "spacing_mean_m": dset.spacing_mean,
                 "spacing_std_m": dset.spacing_std,

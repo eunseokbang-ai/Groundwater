@@ -1,32 +1,31 @@
-"""Normal estimation for rock-face point clouds."""
+"""Per-point local geometry (normal + planarity) for rock-face point clouds."""
 import numpy as np
 import open3d as o3d
 
+_EIG_CHUNK = 1_000_000
 
-def estimate_normals(
-    pcd: o3d.geometry.PointCloud,
-    search_radius: float = 0.1,
-    max_nn: int = 30,
-    camera_location: tuple[float, float, float] | None = None,
-) -> o3d.geometry.PointCloud:
-    """Estimate normals and orient them to point away from the rock face (outward).
 
-    For a drone-scanned cliff, orienting normals consistently is required before
-    orientation clustering -- otherwise a single planar joint set could be split
-    into two clusters pointing in opposite directions. If no camera_location is
-    given, the centroid-outward heuristic (tangent-plane propagation) is used.
+def estimate_local_geometry(
+    pcd: o3d.geometry.PointCloud, search_radius: float = 0.1, max_nn: int = 30
+) -> np.ndarray:
+    """Set pcd.normals in place and return each point's surface variation.
+
+    Surface variation = smallest / sum of the local covariance eigenvalues:
+    ~0 on a flat patch, up to 1/3 for an isotropic blob. Vegetation, netting
+    edges and plane intersections score high, which is what the coplanarity
+    filter in segmentation relies on. Normal signs are left arbitrary -- all
+    downstream orientation statistics are axial.
     """
-    pcd.estimate_normals(
-        search_param=o3d.geometry.KDTreeSearchParamHybrid(radius=search_radius, max_nn=max_nn)
-    )
-    if camera_location is not None:
-        pcd.orient_normals_towards_camera_location(camera_location)
-    else:
-        pcd.orient_normals_consistent_tangent_plane(k=max_nn)
-    return pcd
+    pcd.estimate_covariances(o3d.geometry.KDTreeSearchParamHybrid(radius=search_radius, max_nn=max_nn))
+    covariances = np.asarray(pcd.covariances)
 
+    normals = np.empty((len(covariances), 3))
+    variation = np.empty(len(covariances))
+    for start in range(0, len(covariances), _EIG_CHUNK):
+        vals, vecs = np.linalg.eigh(covariances[start:start + _EIG_CHUNK])
+        total = vals.sum(axis=1)
+        normals[start:start + _EIG_CHUNK] = vecs[:, :, 0]
+        variation[start:start + _EIG_CHUNK] = np.where(total > 0, vals[:, 0] / np.where(total > 0, total, 1.0), 1.0 / 3.0)
 
-def normals_array(pcd: o3d.geometry.PointCloud) -> np.ndarray:
-    if not pcd.has_normals():
-        raise ValueError("Point cloud has no normals -- call estimate_normals() first")
-    return np.asarray(pcd.normals)
+    pcd.normals = o3d.utility.Vector3dVector(normals)
+    return variation

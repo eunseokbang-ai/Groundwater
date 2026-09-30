@@ -2,9 +2,8 @@
 persistence and a roughness proxy.
 
 Convention (matches common rock-mass point-cloud literature, e.g. Riquelme et al.):
-x = East, y = North, z = Up. The plane's pole (normal) is folded to the upper
-hemisphere (nz >= 0) before conversion so every plane has one unambiguous
-dip / dip-direction pair.
+x = East, y = North, z = Up. Poles are only folded to the upper hemisphere at the
+final dip / dip-direction conversion; all statistics before that are axial.
 """
 from dataclasses import dataclass, field
 
@@ -76,42 +75,46 @@ class DiscontinuitySet:
     mean_dip: float
     mean_dip_direction: float
     fisher_k: float
+    n_points: int
     patches: list = field(default_factory=list)
     spacing_mean: float | None = None
     spacing_std: float | None = None
 
 
-def mean_orientation(normals: np.ndarray) -> tuple[float, float, float]:
-    """Fisher mean of a set of unit normals -> (mean_dip, mean_dip_direction, fisher_k).
+def axial_mean(normals: np.ndarray) -> tuple[np.ndarray, float]:
+    """Mean axis of a set of poles -> (unit_axis, fisher_k).
 
-    fisher_k is a concentration parameter (higher = tighter cluster, i.e. a more
-    well-defined joint set); it is the standard summary statistic reported
-    alongside orientation clusters in rock-mass discontinuity studies.
+    Poles are axial (n and -n are the same plane), so the mean is the principal
+    eigenvector of the orientation tensor rather than a vector sum -- folding to
+    a hemisphere first cancels out sub-vertical sets whose poles straddle nz = 0.
+    fisher_k is computed after flipping each pole onto the mean axis; higher
+    means a tighter, better-defined set.
     """
-    folded = np.where(normals[:, 2:3] < 0, -normals, normals)
-    resultant = folded.sum(axis=0)
-    r = np.linalg.norm(resultant)
-    n = len(folded)
-    mean_vec = resultant / r if r > 0 else np.array([0.0, 0.0, 1.0])
-    dip, dip_dir = normal_to_dip_dipdir(mean_vec)
-    r_bar = r / n if n else 0.0
-    fisher_k = (n - 1) / max(n - r, 1e-9) if n > r else float("inf")
-    return dip, dip_dir, fisher_k
+    _, vecs = np.linalg.eigh(normals.T @ normals)
+    axis = vecs[:, -1]
+    signs = np.where(normals @ axis < 0, -1.0, 1.0)
+    r = np.linalg.norm((normals * signs[:, None]).sum(axis=0))
+    n = len(normals)
+    fisher_k = (n - 1) / (n - r) if n > r else float("inf")
+    return axis, float(fisher_k)
 
 
-def compute_spacing(patch_centroids: np.ndarray, mean_normal: np.ndarray) -> tuple[float | None, float | None]:
+def compute_spacing(
+    patch_centroids: np.ndarray, mean_normal: np.ndarray, coplanar_tolerance: float
+) -> tuple[float | None, float | None]:
     """Perpendicular spacing between parallel patches in the same set.
 
-    Patch centroids are projected onto the set's mean normal axis; spacing is
-    the gap between consecutive projections once sorted.
+    Patch centroids are projected onto the set's mean normal axis. Projections
+    within `coplanar_tolerance` of each other are treated as fragments of one
+    discontinuity (a joint cut into pieces by netting, vegetation or occlusion)
+    so they do not contribute near-zero spacings.
     """
     if len(patch_centroids) < 2:
         return None, None
     n = mean_normal / np.linalg.norm(mean_normal)
-    proj = patch_centroids @ n
-    proj.sort()
+    proj = np.sort(patch_centroids @ n)
     gaps = np.diff(proj)
-    gaps = gaps[gaps > 1e-6]
+    gaps = gaps[gaps > coplanar_tolerance]
     if len(gaps) == 0:
         return None, None
     return float(gaps.mean()), float(gaps.std())

@@ -5,10 +5,11 @@ site_name: example_site
 
 paths:
   # RGB photogrammetry outputs (Pix4D / Metashape). LiDAR + thermal are added
-  # in Phase 2 once acquired -- leave blank until then.
+  # in Phase 2 once acquired -- leave blank until then. A nadir orthomosaic is
+  # not used: a vertical wall collapses to a thin strip in it. The facade image
+  # is rendered from the colored point cloud instead (see `facade` below).
   point_cloud: data/raw/example_site/rgb_photogrammetry/pointcloud.las
   mesh: data/raw/example_site/rgb_photogrammetry/model.obj
-  orthomosaic: data/raw/example_site/rgb_photogrammetry/orthomosaic.tif
   lidar_point_cloud: null
   thermal_orthomosaic: null
   # Field-measured joint orientations for validation (scanline / borehole).
@@ -29,6 +30,17 @@ preprocessing:
   # to isolate the excavation face from surrounding terrain. Null = no crop.
   crop_bbox: null
 
+wall_frame:
+  # Wall coordinates: u = chainage along the wall, v = elevation, w = offset
+  # toward the pit. Give a plan-view polyline [[x, y], ...] tracing the wall
+  # (e.g. digitized in QGIS along the crest or toe), ordered left-to-right as
+  # seen standing in the pit facing the wall. A curved pit wall is unrolled
+  # along it. null = fit one straight line (a single planar wall section).
+  polyline: null
+  # Any plan-view point on the open side, e.g. the pit centre [x, y]. Decides
+  # which side is "in front"; strongly recommended.
+  viewer_point: null
+
 normals:
   # Neighborhood radius (meters) for normal + planarity estimation. Should span
   # several point spacings but stay smaller than the joint faces you want to see.
@@ -47,8 +59,9 @@ orientation_sets:
   min_separation_deg: 20.0
   # Poles further than this from every set mean stay unassigned.
   cone_angle_deg: 25.0
-  # A set needs at least this fraction of planar points...
-  min_set_fraction: 0.01
+  # A set needs at least this fraction of planar points (kept low because the
+  # excavated face usually dominates the point count)...
+  min_set_fraction: 0.003
   # ...and a density peak this many times the median (background) density.
   min_peak_contrast: 3.0
   max_sets: null
@@ -61,8 +74,28 @@ patches:
   link_distance: 0.05
   min_patch_points: 30
 
+facade:
+  # Facade orthophoto pixel size (m). Rendered from the cropped cloud before
+  # downsampling. Use ~1.2x the raw point spacing or coarser: finer pixels leave
+  # regular gaps between points that show up as stripes and false edges.
+  resolution: 0.02
+  # Passes of small-hole filling between projected points.
+  fill_iterations: 2
+
 trace_mapping:
+  # Gaussian blur before edge detection (pixels); 0 disables it.
+  blur_sigma_px: 1.5
+  # Canny edge thresholds (0-255 gray, after a 1-99 percentile stretch) and
+  # Hough line limits in facade pixels. A line needs as many edge pixels as
+  # hough_min_line_length_px.
   canny_low: 50
   canny_high: 150
   hough_min_line_length_px: 20
   hough_max_line_gap_px: 5
+
+trace_matching:
+  # A 3D patch counts as confirmed when a facade trace passes within
+  # `tolerance` m of it AND runs within `max_angle_deg` of the direction in
+  # which that joint plane should cross the wall.
+  tolerance: 0.1
+  max_angle_deg: 20.0

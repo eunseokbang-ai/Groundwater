@@ -1,4 +1,9 @@
-"""Georeferenced raster loading (orthomosaic, thermal orthophoto) via rasterio."""
+"""Raster I/O via rasterio.
+
+A Raster's transform maps pixels to map coordinates: projected x/y for a
+georeferenced orthomosaic, or (chainage, elevation) for a facade raster, which
+has no CRS.
+"""
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -27,3 +32,12 @@ def load_raster(path: str | Path) -> Raster:
     with rasterio.open(str(path)) as src:
         array = src.read()
         return Raster(array=array, transform=src.transform, crs=src.crs, nodata=src.nodata)
+
+
+def write_raster(path: str | Path, raster: Raster) -> None:
+    bands, rows, cols = raster.array.shape
+    with rasterio.open(
+        str(path), "w", driver="GTiff", height=rows, width=cols, count=bands,
+        dtype=raster.array.dtype, crs=raster.crs, transform=raster.transform, nodata=raster.nodata,
+    ) as dst:
+        dst.write(raster.array)

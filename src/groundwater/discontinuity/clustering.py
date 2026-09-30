@@ -86,7 +86,7 @@ def find_orientation_sets(
     bandwidth_deg: float = 6.0,
     min_separation_deg: float = 20.0,
     cone_angle_deg: float = 25.0,
-    min_set_fraction: float = 0.01,
+    min_set_fraction: float = 0.003,
     min_set_points: int = 30,
     min_peak_contrast: float = 3.0,
     max_sets: int | None = None,

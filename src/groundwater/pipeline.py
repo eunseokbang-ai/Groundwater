@@ -1,13 +1,14 @@
 """Phase 1 end-to-end orchestration: RGB photogrammetry point cloud/mesh ->
-discontinuity extraction -> (optional) 2D trace cross-check -> (optional)
-field-measurement validation -> outputs on disk for the dashboard.
+discontinuity extraction -> wall frame + facade orthophoto -> 2D trace
+cross-check -> (optional) field-measurement validation -> outputs on disk for
+the dashboard.
 
 CLI usage:
     python -m groundwater.pipeline --config configs/example_site.yaml
 """
 import argparse
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
@@ -18,22 +19,28 @@ from .discontinuity.geometry import DiscontinuitySet
 from .discontinuity.normals import estimate_local_geometry
 from .discontinuity.segmentation import extract_discontinuities
 from .discontinuity.trace_mapping import Trace2D, extract_traces, match_traces_to_patches
+from .facade.frame import WallFrame, build_wall_frame
+from .facade.orthophoto import rasterize_facade
 from .io.mesh import load_mesh, mesh_to_point_cloud
 from .io.point_cloud import crop_bbox, downsample, load_point_cloud
-from .io.raster import Raster, load_raster
+from .io.raster import Raster, write_raster
 from .validation.field_compare import compare_to_field, load_field_measurements, summarize_errors
+
+FOOTPRINT_SAMPLE = 500
 
 
 @dataclass
 class PipelineResult:
     config: dict
-    point_cloud: object  # open3d.geometry.PointCloud
+    point_cloud: object  # open3d.geometry.PointCloud (analysis resolution)
     point_labels: np.ndarray  # (N, 2): [set_id, patch_id] per point, -1 = unassigned
     discontinuity_sets: list[DiscontinuitySet]
-    traces: list[Trace2D]
-    patch_trace_confirmed: np.ndarray | None
+    wall_frame: WallFrame
+    facade_rgb: Raster | None
+    facade_depth: Raster | None
     field_comparison: pd.DataFrame | None
-    orthomosaic: Raster | None
+    traces: list[Trace2D] = field(default_factory=list)
+    trace_confirmed: dict = field(default_factory=dict)  # patch_id -> True / False / None (n/a)
 
 
 def load_config(path: str | Path) -> dict:
@@ -54,11 +61,10 @@ def _load_input_cloud(cfg: dict):
 
 
 def run_pipeline(cfg: dict) -> PipelineResult:
-    pcd = _load_input_cloud(cfg)
-
+    cloud = _load_input_cloud(cfg)
     prep = cfg.get("preprocessing", {})
-    pcd = crop_bbox(pcd, prep.get("crop_bbox"))
-    pcd = downsample(pcd, prep.get("voxel_size", 0.02))
+    cloud = crop_bbox(cloud, prep.get("crop_bbox"))
+    pcd = downsample(cloud, prep.get("voxel_size", 0.02))
 
     surface_variation = estimate_local_geometry(pcd, **cfg.get("normals", {}))
     discontinuity_sets, point_labels = extract_discontinuities(
@@ -68,41 +74,58 @@ def run_pipeline(cfg: dict) -> PipelineResult:
         **cfg.get("patches", {}),
     )
 
-    traces: list[Trace2D] = []
-    patch_trace_confirmed = None
-    orthomosaic = None
-    ortho_path = cfg["paths"].get("orthomosaic")
-    if ortho_path and Path(ortho_path).exists():
-        orthomosaic = load_raster(ortho_path)
-        tm_cfg = cfg.get("trace_mapping", {})
-        traces = extract_traces(
-            orthomosaic,
-            canny_low=tm_cfg.get("canny_low", 50),
-            canny_high=tm_cfg.get("canny_high", 150),
-            hough_min_line_length_px=tm_cfg.get("hough_min_line_length_px", 20),
-            hough_max_line_gap_px=tm_cfg.get("hough_max_line_gap_px", 5),
-        )
-        all_patches = [p for dset in discontinuity_sets for p in dset.patches]
-        if all_patches:
-            patch_xy = np.array([p.centroid[:2] for p in all_patches])
-            patch_trace_confirmed = match_traces_to_patches(traces, patch_xy, tolerance_m=prep.get("voxel_size", 0.02) * 5)
+    frame_cfg = cfg.get("wall_frame", {})
+    frame = build_wall_frame(np.asarray(pcd.points), frame_cfg.get("polyline"), frame_cfg.get("viewer_point"))
 
     field_comparison = None
     field_path = cfg["paths"].get("field_measurements")
     if field_path and Path(field_path).exists():
-        field_df = load_field_measurements(field_path)
-        field_comparison = compare_to_field(discontinuity_sets, field_df)
+        field_comparison = compare_to_field(discontinuity_sets, load_field_measurements(field_path))
 
-    return PipelineResult(
+    result = PipelineResult(
         config=cfg,
         point_cloud=pcd,
         point_labels=point_labels,
         discontinuity_sets=discontinuity_sets,
-        traces=traces,
-        patch_trace_confirmed=patch_trace_confirmed,
+        wall_frame=frame,
+        facade_rgb=None,
+        facade_depth=None,
         field_comparison=field_comparison,
-        orthomosaic=orthomosaic,
     )
+    if cloud.has_colors():
+        # Full-density cloud, not the downsampled analysis cloud: a sharper image for trace detection.
+        result.facade_rgb, result.facade_depth = rasterize_facade(
+            frame.to_wall(np.asarray(cloud.points)), np.asarray(cloud.colors), **cfg.get("facade", {})
+        )
+        result.traces = extract_traces(
+            result.facade_rgb, valid_mask=np.isfinite(result.facade_depth.array[0]), **cfg.get("trace_mapping", {})
+        )
+        result.trace_confirmed = _check_traces(result, **cfg.get("trace_matching", {}))
+    return result
+
+
+def _check_traces(result: PipelineResult, tolerance: float = 0.1, max_angle_deg: float = 20.0) -> dict:
+    patches = [p for dset in result.discontinuity_sets for p in dset.patches]
+    if not patches:
+        return {}
+    points = np.asarray(result.point_cloud.points)
+    patch_ids = result.point_labels[:, 1]
+    order = np.argsort(patch_ids, kind="stable")
+    sorted_ids = patch_ids[order]
+    rng = np.random.default_rng(0)
+
+    footprints, expected = [], []
+    for p in patches:
+        lo, hi = np.searchsorted(sorted_ids, [p.patch_id, p.patch_id + 1])
+        idx = order[lo:hi]
+        if len(idx) > FOOTPRINT_SAMPLE:
+            idx = rng.choice(idx, FOOTPRINT_SAMPLE, replace=False)
+        footprints.append(result.wall_frame.to_wall(points[idx])[:, :2])
+        u = result.wall_frame.to_wall(p.centroid)[0, 0]
+        expected.append(result.wall_frame.apparent_trace_direction(p.normal, u))
+
+    confirmed = match_traces_to_patches(result.traces, footprints, expected, tolerance, max_angle_deg)
+    return {p.patch_id: c for p, c in zip(patches, confirmed)}
 
 
 def save_results(result: PipelineResult, output_dir: str | Path) -> None:
@@ -110,10 +133,10 @@ def save_results(result: PipelineResult, output_dir: str | Path) -> None:
 
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
+    frame = result.wall_frame
 
     sets_rows = []
     patches_rows = []
-    trace_idx = 0
     for dset in result.discontinuity_sets:
         sets_rows.append(
             {
@@ -128,14 +151,15 @@ def save_results(result: PipelineResult, output_dir: str | Path) -> None:
             }
         )
         for p in dset.patches:
-            confirmed = None
-            if result.patch_trace_confirmed is not None and trace_idx < len(result.patch_trace_confirmed):
-                confirmed = bool(result.patch_trace_confirmed[trace_idx])
+            u, v, w = frame.to_wall(p.centroid)[0]
             patches_rows.append(
                 {
                     "set_id": p.set_id,
                     "patch_id": p.patch_id,
                     "n_points": p.n_points,
+                    "chainage_m": u,
+                    "elevation_m": v,
+                    "offset_m": w,
                     "centroid_x": p.centroid[0],
                     "centroid_y": p.centroid[1],
                     "centroid_z": p.centroid[2],
@@ -144,13 +168,19 @@ def save_results(result: PipelineResult, output_dir: str | Path) -> None:
                     "roughness_rms_m": p.roughness_rms,
                     "persistence_length_m": p.persistence_length,
                     "area_m2": p.area,
-                    "trace_confirmed_2d": confirmed,
+                    "face_parallel": frame.apparent_trace_direction(p.normal, u) is None,
+                    "trace_confirmed_2d": result.trace_confirmed.get(p.patch_id),
                 }
             )
-            trace_idx += 1
 
     pd.DataFrame(sets_rows).to_csv(output_dir / "discontinuity_sets.csv", index=False)
     pd.DataFrame(patches_rows).to_csv(output_dir / "discontinuity_patches.csv", index=False)
+
+    with open(output_dir / "wall_frame.json", "w", encoding="utf-8") as f:
+        json.dump({"polyline": frame.vertices.tolist(), "length_m": frame.length}, f, indent=2)
+    if result.facade_rgb is not None:
+        write_raster(output_dir / "facade_rgb.tif", result.facade_rgb)
+        write_raster(output_dir / "facade_depth.tif", result.facade_depth)
 
     if result.field_comparison is not None:
         result.field_comparison.to_csv(output_dir / "field_comparison.csv", index=False)
@@ -187,11 +217,20 @@ def main():
     output_dir = cfg["paths"].get("output_dir", "data/processed/output")
     save_results(result, output_dir)
 
+    print(f"Wall frame: {len(result.wall_frame.vertices)}-vertex polyline, {result.wall_frame.length:.1f} m of chainage")
     print(f"Extracted {len(result.discontinuity_sets)} discontinuity sets")
     for dset in result.discontinuity_sets:
         print(
             f"  Set {dset.set_id}: dip={dset.mean_dip:.1f} dip_dir={dset.mean_dip_direction:.1f} "
             f"n_patches={len(dset.patches)} spacing={dset.spacing_mean}"
+        )
+    if result.facade_rgb is None:
+        print("Point cloud has no colors: facade orthophoto and trace cross-check skipped")
+    else:
+        states = list(result.trace_confirmed.values())
+        print(
+            f"Facade traces: {len(result.traces)} detected; patches confirmed={states.count(True)} "
+            f"unconfirmed={states.count(False)} face-parallel(n/a)={states.count(None)}"
         )
     if result.field_comparison is not None:
         print("Field comparison summary:", summarize_errors(result.field_comparison))

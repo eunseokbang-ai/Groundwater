@@ -81,16 +81,17 @@ class DiscontinuitySet:
     spacing_std: float | None = None
 
 
-def axial_mean(normals: np.ndarray) -> tuple[np.ndarray, float]:
+def axial_mean(normals: np.ndarray, weights: np.ndarray | None = None) -> tuple[np.ndarray, float]:
     """Mean axis of a set of poles -> (unit_axis, fisher_k).
 
     Poles are axial (n and -n are the same plane), so the mean is the principal
-    eigenvector of the orientation tensor rather than a vector sum -- folding to
-    a hemisphere first cancels out sub-vertical sets whose poles straddle nz = 0.
-    fisher_k is computed after flipping each pole onto the mean axis; higher
-    means a tighter, better-defined set.
+    eigenvector of the (optionally weighted) orientation tensor rather than a
+    vector sum -- folding to a hemisphere first cancels out sub-vertical sets
+    whose poles straddle nz = 0. fisher_k (unweighted) is computed after
+    flipping each pole onto the mean axis; higher means a tighter set.
     """
-    _, vecs = np.linalg.eigh(normals.T @ normals)
+    weighted = normals if weights is None else normals * weights[:, None]
+    _, vecs = np.linalg.eigh(weighted.T @ normals)
     axis = vecs[:, -1]
     signs = np.where(normals @ axis < 0, -1.0, 1.0)
     r = np.linalg.norm((normals * signs[:, None]).sum(axis=0))

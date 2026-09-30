@@ -1,11 +1,18 @@
-"""Phase 2: drape the (registered) thermal raster onto the 3D mesh/point cloud
-so each discontinuity patch can be looked up for a co-located temperature
-value.
+"""Phase 2: drape registered thermal imagery onto the wall so each
+discontinuity patch can be looked up for a co-located temperature.
 
-Planned interface:
+Not yet implemented. Sampling a nadir thermal orthomosaic by (x, y) is not an
+option: a vertical wall collapses to a thin strip in plan view. Planned
+interface, built on facade.frame.WallFrame so thermal, RGB facade and depth
+rasters share one (chainage, elevation) pixel grid:
 
-    def sample_thermal_at_points(points_xyz: np.ndarray, thermal_raster: Raster) -> np.ndarray
-        For each 3D point, project to (x, y) and bilinearly sample the
-        registered thermal raster -- requires registration.align to have
-        already placed thermal_raster in the same CRS/frame as points_xyz.
+    def thermal_facade(frame, points_xyz, thermal_images, camera_poses, resolution) -> Raster
+        Back-project each radiometric thermal image through its camera pose
+        (the H20T records thermal and wide RGB together, so the poses come from
+        the RGB photogrammetry) onto the point cloud, keep per point the view
+        most perpendicular to the wall, then rasterize with the same z-buffer
+        rule as facade.orthophoto.
+
+    def sample_facade(raster, uv) -> np.ndarray
+        Temperature at wall coordinates, e.g. along each patch footprint.
 """

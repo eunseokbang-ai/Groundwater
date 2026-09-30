@@ -64,32 +64,55 @@ def render_3d_view(result):
     st.plotly_chart(fig, use_container_width=True)
 
 
+TRACE_STATES = [
+    (True, "lime", "confirmed by a facade trace"),
+    (False, "orange", "no matching trace"),
+    (None, "deepskyblue", "wall-parallel (check n/a)"),
+]
+
+
 def render_trace_map(result):
-    if result.orthomosaic is None:
-        st.info("No orthomosaic configured for this site -- 2D trace mapping skipped.")
+    if result.facade_rgb is None:
+        st.info("Point cloud has no colors -- facade orthophoto and trace cross-check skipped.")
         return
 
-    array = result.orthomosaic.array
-    if array.shape[0] >= 3:
-        rgb = np.moveaxis(array[:3], 0, -1)
-        rgb = (rgb - rgb.min()) / max(rgb.max() - rgb.min(), 1e-6)
-        img = (rgb * 255).astype(np.uint8)
-    else:
-        band = array[0]
-        img = ((band - band.min()) / max(band.max() - band.min(), 1e-6) * 255).astype(np.uint8)
-
-    fig = go.Figure(go.Image(z=img))
+    img = np.moveaxis(result.facade_rgb.array, 0, -1).copy()
+    img[~np.isfinite(result.facade_depth.array[0])] = 255
+    t = result.facade_rgb.transform
+    fig = go.Figure(go.Image(z=img, x0=t.c + t.a / 2, dx=t.a, y0=t.f + t.e / 2, dy=t.e, hoverinfo="skip"))
     for trace in result.traces:
-        rows_cols = trace.pixel_coords
         fig.add_trace(
             go.Scatter(
-                x=rows_cols[:, 1], y=rows_cols[:, 0], mode="lines",
-                line=dict(color="red", width=1), showlegend=False,
+                x=trace.coords[:, 0], y=trace.coords[:, 1], mode="lines",
+                line=dict(color="red", width=1), showlegend=False, hoverinfo="skip",
             )
         )
-    fig.update_layout(height=700, margin=dict(l=0, r=0, t=30, b=0))
+
+    patches = [p for d in result.discontinuity_sets for p in d.patches]
+    if patches:
+        uv = result.wall_frame.to_wall(np.array([p.centroid for p in patches]))
+        for state, color, label in TRACE_STATES:
+            idx = [i for i, p in enumerate(patches) if result.trace_confirmed.get(p.patch_id) is state]
+            if not idx:
+                continue
+            fig.add_trace(
+                go.Scatter(
+                    x=uv[idx, 0], y=uv[idx, 1], mode="markers", name=label,
+                    marker=dict(color=color, size=9, line=dict(color="black", width=1)),
+                    text=[f"Set {patches[i].set_id} / patch {patches[i].patch_id}<br>"
+                          f"{patches[i].dip:.0f}/{patches[i].dip_direction:03.0f}" for i in idx],
+                    hovertemplate="%{text}<br>chainage %{x:.2f} m<br>elevation %{y:.2f} m<extra></extra>",
+                )
+            )
+
+    fig.update_xaxes(title="측점 chainage (m)")
+    fig.update_yaxes(title="표고 elevation (m)", autorange=True, scaleanchor="x", scaleratio=1)
+    fig.update_layout(height=700, margin=dict(l=0, r=0, t=30, b=0), legend=dict(orientation="h"))
     st.plotly_chart(fig, use_container_width=True)
-    st.caption(f"{len(result.traces)} candidate lineaments detected on the orthomosaic (red).")
+    st.caption(
+        f"Facade orthophoto unrolled along the wall ({result.wall_frame.length:.1f} m). "
+        f"{len(result.traces)} candidate lineaments (red); markers are 3D patches by trace cross-check result."
+    )
 
 
 def render_tables(result):
@@ -112,10 +135,14 @@ def render_tables(result):
     patch_rows = []
     for d in result.discontinuity_sets:
         for p in d.patches:
+            u, v, _ = result.wall_frame.to_wall(p.centroid)[0]
             patch_rows.append(
                 {
                     "set_id": p.set_id,
                     "patch_id": p.patch_id,
+                    "chainage_m": round(u, 2),
+                    "elevation_m": round(v, 2),
+                    "trace_confirmed_2d": result.trace_confirmed.get(p.patch_id),
                     "n_points": p.n_points,
                     "dip": round(p.dip, 1),
                     "dip_direction": round(p.dip_direction, 1),

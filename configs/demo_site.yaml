@@ -1,53 +1,58 @@
-# DEMO config: synthetic data (3 known joint sets + a synthetic orthomosaic
-# with 3 lineaments) used to smoke-test the pipeline / dashboard before real
-# drone data is available. Regenerate with the scripts referenced in the
-# project plan, or just run this as-is to see the pipeline work end to end.
+# DEMO config: synthetic quarry wall (scripts/generate_demo_data.py) -- a
+# 22 m wall with a bend, three natural joint sets (60/150, 35/200, 80/090)
+# exposed as faces with dark traces, and the excavated face itself (which comes
+# out as one extra set per wall section). Run as-is to see every stage work.
+# See configs/example_site.yaml for what each parameter does.
 
 site_name: demo_site
 
 paths:
   point_cloud: data/raw/demo_site/rgb_photogrammetry/pointcloud.ply
   mesh: null
-  orthomosaic: data/raw/demo_site/rgb_photogrammetry/orthomosaic.tif
   lidar_point_cloud: null
   thermal_orthomosaic: null
   field_measurements: data/raw/demo_site/field/scanline_joints.csv
   output_dir: data/processed/demo_site
 
-# Coordinate reference system of the inputs above (informational; all inputs
-# must already share this CRS -- see registration module for Phase 2).
 crs: EPSG:5186
 
 preprocessing:
-  # Voxel size (meters) used to downsample the point cloud before normal
-  # estimation / orientation clustering. Should be well below the smallest
-  # joint spacing you expect to resolve.
-  voxel_size: 0.02
-  # Optional axis-aligned bounding box crop [xmin, ymin, zmin, xmax, ymax, zmax]
-  # to isolate the excavation face from surrounding terrain. Null = no crop.
+  voxel_size: 0.04
   crop_bbox: null
 
+wall_frame:
+  polyline: [[0.0, 0.0], [12.0, 0.0], [20.0, -6.0]]
+  viewer_point: [8.0, -10.0]
+
 normals:
-  search_radius: 0.1
+  search_radius: 0.15
   max_nn: 30
 
-# See configs/example_site.yaml for what each parameter does.
 orientation_sets:
   max_surface_variation: 0.1
   grid_spacing_deg: 1.5
   bandwidth_deg: 6.0
   min_separation_deg: 20.0
   cone_angle_deg: 25.0
-  min_set_fraction: 0.01
+  min_set_fraction: 0.003
   min_peak_contrast: 3.0
   max_sets: null
 
 patches:
-  link_distance: 0.05
+  link_distance: 0.08
   min_patch_points: 30
 
+facade:
+  resolution: 0.05
+  fill_iterations: 2
+
 trace_mapping:
+  blur_sigma_px: 1.5
   canny_low: 50
   canny_high: 150
-  hough_min_line_length_px: 20
+  hough_min_line_length_px: 15
   hough_max_line_gap_px: 5
+
+trace_matching:
+  tolerance: 0.12
+  max_angle_deg: 20.0

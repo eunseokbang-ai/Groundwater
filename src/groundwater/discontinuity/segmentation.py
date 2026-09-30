@@ -25,7 +25,7 @@ def extract_discontinuities(
     bandwidth_deg: float = 6.0,
     min_separation_deg: float = 20.0,
     cone_angle_deg: float = 25.0,
-    min_set_fraction: float = 0.01,
+    min_set_fraction: float = 0.003,
     min_peak_contrast: float = 3.0,
     max_sets: int | None = None,
     link_distance: float = 0.05,
@@ -102,7 +102,10 @@ def extract_discontinuities(
         if not patches:
             continue
 
-        axis, fisher_k = axial_mean(normals[point_set_id == set_id])
+        # Orientation from the patch plane fits: point normals near patch edges and
+        # plane junctions are blended and bias the mean. Scatter still comes from points.
+        axis, _ = axial_mean(np.array([p.normal for p in patches]), weights=np.array([p.n_points for p in patches], float))
+        _, fisher_k = axial_mean(normals[point_set_id == set_id])
         mean_dip, mean_dip_dir = normal_to_dip_dipdir(axis)
         spacing_mean, spacing_std = compute_spacing(
             np.array([p.centroid for p in patches]), axis, coplanar_tolerance=link_distance

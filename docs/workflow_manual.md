@@ -375,6 +375,6 @@ Claude에게 "<현장 폴더>로 불연속면 분석 돌려줘"라고 해도 실
 ## 부록 B. 관련 파일
 
 - 설정 예시: `configs/example_site.yaml` (각 항목 주석 포함), 합성 시연: `configs/demo_site.yaml`
-- 파이프라인: `src/groundwater/pipeline.py` · 대시보드: `src/groundwater/viz/dashboard/app.py`
+- 파이프라인: `src/groundwater/pipeline.py` · 대시보드: `src/groundwater/viz/dashboard/` (시작 파일 `app.py`, 화면마다 `views/`의 모듈 하나)
 - 발표 그림: `docs/figures/` (취득→처리→분석→해석 슬라이드 13장, 모듈 연계도, 침출수 연표)
 - 과거 정사영상 뷰어: `정사영상_변천_뷰어.bat`

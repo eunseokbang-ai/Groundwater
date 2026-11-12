@@ -1,4 +1,5 @@
-"""Streamlit dashboard for the Phase 1 discontinuity-extraction pipeline.
+"""Streamlit dashboard of the discontinuity-extraction pipeline and the views built on its results (seepage,
+thermal, grouting, kinematics, LiDAR sections, site-wide joints).
 
 Run with:
     streamlit run src/groundwater/viz/dashboard/app.py
@@ -154,7 +155,7 @@ def _map_chart(fig, view: str):
 
 
 VIEW_ICONS = {"3D": "view_in_ar", "절리군 지도": "map", "스테레오넷": "explore", "트레이스": "timeline",
-              "유출 가능성": "water_drop", "열화상": "thermostat", "그라우팅 입력": "construction", "안정성 검토": "warning", "라이다 단면": "straighten", "지중 절리 (현장)": "landscape", "굴착면 구분": "construction",
+              "유출 가능성": "water_drop", "열화상": "thermostat", "그라우팅 입력": "construction", "안정성 검토": "warning", "라이다 단면": "straighten", "지중 절리 (현장)": "landscape", "굴착면 구분": "foundation", "현장 전체 3D": "public",
               "표": "table_chart", "현장 검증": "fact_check", "보고서": "description", "암각화 (참고 이미지)": "image"}
 
 MAX_3D_POINTS = 80_000
@@ -234,7 +235,6 @@ def _view3d(fig, key: str, height: int):
 
 
 def render_3d_view(result):
-    _site_tiles_scene()
     # the same figure object every rerun of this result: the 3D page is then built once and not sent again
     fig = _session_cache("_3d_fig", _result_key(), lambda: _main_3d_figure(result))
     _view3d(fig, "v3d_main", 700)
@@ -257,15 +257,17 @@ def _variant_picker(site: Path, key: str, col=None) -> str:
                                       "예: 벽면평행제외 = 절벽면과 평행한 면을 절리군 찾기에서 뺀 분석).")
 
 
-def _site_tiles_scene():
+def render_site_tiles(result=None):
     """Every section's results on the photo-textured tiled model of the whole site, in a browser tab."""
     from groundwater.viz import site3d, tiles3d
 
     site = Path(str(st.session_state.get("site_folder", "")).strip().strip('"'))
     secs = site3d.section_results(site) if site.is_dir() else []
     if not secs:
+        st.info("구간 결과가 없습니다 (현장 폴더/구간/<이름>/분석결과).")
         return
-    with st.expander(":material/public: 현장 전체 실사 3D — 타일 모델 위에 모든 구간의 결과", expanded=False):
+    st.subheader(":material/public: 현장 전체 실사 3D — 타일 모델 위에 모든 구간의 결과")
+    with st.container():
         st.caption("현장 전체 타일 모델(Metashape .3tz, 사진 텍스처)을 배경으로 구간마다의 절리면을 올립니다. 같은 방향의 "
                    "절리군은 구간이 달라도 같은 색(방향 ±20°로 묶음)이고, 이름에 그 절리군이 나오는 구간을 적습니다. 트레이스와 "
                    "유출 가능성 칸(1 m)도 함께 올릴 수 있습니다. 타일 모델은 분석에는 쓰지 않고 보기용입니다 "
@@ -806,25 +808,25 @@ def render_tables(result):
     st.subheader("절리군")
     st.dataframe(sets_df, width="stretch")
 
-    patch_rows = []
-    for d in result.discontinuity_sets:
-        for p in d.patches:
-            u, v, _ = result.wall_frame.to_wall(p.centroid)[0]
-            patch_rows.append(
-                {
-                    "set_id": p.set_id,
-                    "patch_id": p.patch_id,
-                    "chainage_m": round(u, 2),
-                    "elevation_m": round(v, 2),
-                    "trace_confirmed_2d": result.trace_confirmed.get(p.patch_id),
-                    "n_points": p.n_points,
-                    "dip": round(p.dip, 1),
-                    "dip_direction": round(p.dip_direction, 1),
-                    "roughness_rms_m": round(p.roughness_rms, 4),
-                    "persistence_length_m": round(p.persistence_length, 2),
-                    "area_m2": round(p.area, 3),
-                }
-            )
+    patches = [p for d in result.discontinuity_sets for p in d.patches]
+    # all centroids to wall coordinates in one call (one call per face took ~1 s per rerun on a full wall)
+    uv = result.wall_frame.to_wall(np.array([p.centroid for p in patches])) if patches else np.zeros((0, 3))
+    patch_rows = [
+        {
+            "set_id": p.set_id,
+            "patch_id": p.patch_id,
+            "chainage_m": round(float(u), 2),
+            "elevation_m": round(float(v), 2),
+            "trace_confirmed_2d": result.trace_confirmed.get(p.patch_id),
+            "n_points": p.n_points,
+            "dip": round(p.dip, 1),
+            "dip_direction": round(p.dip_direction, 1),
+            "roughness_rms_m": round(p.roughness_rms, 4),
+            "persistence_length_m": round(p.persistence_length, 2),
+            "area_m2": round(p.area, 3),
+        }
+        for p, (u, v, _) in zip(patches, uv)
+    ]
     patches_df = pd.DataFrame(patch_rows)
     st.subheader("개별 절리면")
     st.dataframe(patches_df, width="stretch")
@@ -885,10 +887,11 @@ GENERAL_KEYS = ["adv_auto", "adv_veg", "adv_exg", "adv_min_area", "adv_trace_len
                 "kin_modes", "kin_3d", "kin_tiles", "kin_3d_pts", "kin_3d_op", "kin_3d_cop", "st_mode", "st_method", "st_sigma", "st_cmap", "st_weighted", "g3d_joints", "g3d_dfn",
                 "g3d_jdepth", "g3d_jmax", "g3d_dfn_depth", "g3d_jopacity", "g3d_jshade", "g3d_pred", "sec_band",
                 "sm_cloud", "sm_tiles", "sm_interior", "sm_npts", "sm_other", "sm_jdepth", "sm_jmax", "sm_traces",
-                "sm_dfn", "sm_dfn_depth", "sm_jop", "sm_coords", "sm_mode", "sm_major_n", "sm_major_max", "sm_major_minlen", "sm_major_sep", "sm_major_ext", "sm_major_depth", "sm_face_mode", "sm_face_op", "sm_face_pts", "sm_sec_d", "sm_tiles_joints"]
+                "sm_dfn", "sm_dfn_depth", "sm_jop", "sm_coords", "sm_mode", "sm_major_max", "sm_major_minlen", "sm_major_sep", "sm_major_ext", "sm_major_depth", "sm_face_mode", "sm_face_op", "sm_face_pts", "sm_sec_d", "sm_tiles_joints"]
 SITE_KEYS = ["pick_cloud", "pick_mesh", "pick_field", "adv_u_lo", "adv_u_hi", "adv_v_lo", "adv_v_hi",
              "adv_use_poly", "g3d_rows", "g3d_cut_on", "g3d_cut_range", "sec_u", "planar_dir", "mesh_path",
-             "tiles_path", "sm_cloud_range", "sm_range", "sm_sec_v", "sm_sec_u", "th_rgb_dir", "th_dir", "th_range"]
+             "tiles_path", "sm_cloud_range", "sm_range", "sm_sec_v", "sm_sec_u", "th_rgb_dir", "th_dir", "th_range",
+             "seep_range"]
 _PLANAR_WIDGETS = ("adv_planar", "planar_dir_input", "planar_redetect_dir")
 _LINKED_WIDGETS = {"planar_dir": list(_PLANAR_WIDGETS), "mesh_path": ["mesh_path_input"]}
 _RESULT_STATE = ("result", "result_key", "output_dir", "loaded_from", "_figs", "_seep", "_seep_key", "_seep_default",
@@ -1132,6 +1135,7 @@ def sidebar_folder():
     section = _section_picker(folder)
     _apply_folder_settings(folder, section)
     found = site_folder.scan(folder)
+    st.session_state["_site_lidar"] = bool(found["lidar"])       # for _site_has_views
     sdir = site_folder.section_dir(folder, section)
     if section:
         wl = sdir / site_folder.WALL_LINE_NAME
@@ -1282,9 +1286,161 @@ def main():
 
 
 STAGE_NAMES = {"load": "점군 읽기", "frame": "기준선·분석 범위", "auto_scale": "자동 설정 (점 간격)",
-               "voxel": "식생 제외·복셀", "normals": "법선·곡률", "joints": "절리면·절리군",
+               "voxel": "식생 제외·복셀", "masks": "낙석방지망·평탄 지면 제외", "lidar": "라이다로 망·식생 뒤 암반 보강",
+               "normals": "법선·곡률", "joints": "절리면·절리군",
                "facade": "입면 영상 (원본 전체 점)", "planar": "고해상도 평면 자료 (색·트레이스)",
-               "kinematics": "안정성 검토", "save": "결과 저장"}
+               "cleaning": "식생 위의 면 제외", "kinematics": "안정성 검토", "save": "결과 저장"}
+
+
+def _dur(seconds: float) -> str:
+    """'36분 27초' / '14초'."""
+    s = int(round(seconds))
+    return f"{s // 60}분 {s % 60:02d}초" if s >= 60 else f"{s}초"
+
+
+def _last_timings(output_dir) -> dict:
+    """Seconds per stage of the run that made the result on screen, if that result belongs to `output_dir` (a guide
+    for the next run of the same folder); else {}."""
+    result = st.session_state.get("result")
+    shown = st.session_state.get("output_dir")
+    if result is None or not shown or _folder_id(shown) != _folder_id(output_dir):
+        return {}
+    return dict(getattr(result, "timings", None) or {})
+
+
+def _run_notes(prev, out_dir) -> list:
+    """What a new run replaces (asked about before it starts): the saved result of this folder, the result on
+    screen; with the duration of the last run when known. [] when nothing is replaced."""
+    import datetime
+
+    notes = []
+    if prev:
+        when = datetime.datetime.fromtimestamp((Path(prev) / RESULT_PICKLE).stat().st_mtime)
+        notes.append(f"이 폴더에는 **{when:%Y-%m-%d %H:%M}**에 저장된 분석 결과가 있습니다."
+                     + (" 새 분석이 끝나면 그 결과를 **덮어씁니다** (남겨 두려면 먼저 분석결과 폴더의 이름을 바꾸세요)."
+                        if _folder_id(prev) == _folder_id(out_dir) else ""))
+    if st.session_state.get("result") is not None:
+        notes.append("지금 화면의 결과는 닫힙니다.")
+    total = sum(_last_timings(out_dir).values())
+    if notes and total:
+        notes.append(f"지난 분석은 **{_dur(total)}** 걸렸습니다.")
+    return notes
+
+
+def _run_go():
+    st.session_state["_run_go"] = True
+
+
+@st.dialog("분석 실행", icon=":material/play_circle:")
+def _run_dialog(cfg: dict, notes: list, last: dict):
+    """The analysis run, in a dialog: first the question when a result would be replaced (`notes`), then the
+    stages as they go. A full wall takes over an hour, so the run is not started by one stray click, and the dialog
+    covers the page while it runs. Everything sits in one slot: the question is replaced by the progress at once,
+    not left greyed for the whole run."""
+    slot = st.empty()
+    if notes and not st.session_state.pop("_run_go", False):
+        with slot.container():
+            st.markdown("\n".join(f"- {n}" for n in notes))
+            with st.container(horizontal=True, horizontal_alignment="right"):
+                if st.button("취소", key="run_cancel"):
+                    st.rerun()
+                st.button("분석 실행", type="primary", icon=":material/play_arrow:", key="run_confirm", on_click=_run_go)
+        return
+    with slot.container():
+        st.caption("분석이 끝날 때까지 이 창을 열어 두세요. 창을 닫고 다른 곳을 눌러도 분석은 계속되어 저장되고, "
+                   "진행 상황은 화면 위쪽에 나옵니다.")
+        shown = _run_analysis(cfg, last)
+    if shown:
+        st.rerun()                             # closes the dialog; _take_run puts the result on screen
+
+
+def _run_analysis(cfg: dict, last: dict) -> bool:
+    """Run the pipeline and save the result, with the stages listed as they end and the running one in the box's
+    title (`last` = seconds per stage of the previous run of this folder, shown as a guide). The result is left in
+    the session's run record (`_run_job`), from where the next script run takes it (_take_run).
+
+    When a widget is touched during the run, Streamlit stops this script at its next st.* call or Session State
+    access and starts a new one -- which would drop an analysis of up to an hour. So from that moment this run
+    shows nothing more and touches no Session State: it only finishes, saves and fills the record it already holds.
+    Returns whether this script is still the one on screen."""
+    import datetime
+    import time
+    import traceback
+
+    from streamlit.runtime.scriptrunner import RerunException, StopException
+
+    out_dir = cfg["paths"].get("output_dir", "data/processed/output")
+    job = {"state": "running", "stage": "load", "since": time.time(), "started": time.time(), "out_dir": out_dir,
+           "folder": st.session_state.get("_settings_folder")}
+    for k in _RESULT_STATE:
+        st.session_state.pop(k, None)
+    st.session_state["_run_job"] = job
+    shown = [True]
+
+    def tell(fn):
+        if shown[0]:
+            try:
+                fn()
+            except (RerunException, StopException):
+                shown[0] = False
+
+    box = st.status("분석을 시작하는 중...", expanded=True)
+
+    def progress(stage, finished, seconds):
+        job.update(stage=stage, since=time.time())
+        if finished:
+            tell(lambda: box.write(f":material/check: {STAGE_NAMES.get(finished, finished)} — {_dur(seconds)}"))
+        usual = f" · 지난번 {_dur(last[stage])}" if last.get(stage) else ""
+        tell(lambda: box.update(label=f"{STAGE_NAMES.get(stage, stage)} ({datetime.datetime.now():%H:%M} 시작{usual})",
+                                expanded=True))             # a label update alone closes the box
+
+    try:
+        result = run_pipeline(cfg, progress=progress)
+        progress("save", "kinematics", result.timings.get("kinematics", 0.0))
+        t_save = time.perf_counter()
+        save_results(result, out_dir)
+        result.timings["save"] = round(time.perf_counter() - t_save, 1)
+    except Exception:
+        job.update(state="error", error=traceback.format_exc())
+        tell(lambda: box.update(label="분석이 중단되었습니다", state="error", expanded=True))
+        return shown[0]
+    job.update(state="done", result=result, finished=time.time())
+    tell(lambda: box.update(label=f"분석 완료 — 모두 {_dur(job['finished'] - job['started'])}", state="complete",
+                            expanded=True))
+    return shown[0]
+
+
+def _take_run() -> bool:
+    """The run record of this session (_run_analysis): a finished run's result is put on screen, a failed one's
+    error shown, a running one announced (the page of a run that lost its display). Returns whether one is running."""
+    import datetime
+
+    job = st.session_state.get("_run_job")
+    if not job:
+        return False
+    if job["state"] == "running":
+        hm = lambda t: f"{datetime.datetime.fromtimestamp(t):%H:%M}"  # noqa: E731
+        with st.container(border=True, horizontal=True, vertical_alignment="center"):
+            st.markdown(f":material/progress_activity: **분석이 진행 중입니다** ({hm(job['started'])} 시작) — 지금 단계: "
+                        f"{STAGE_NAMES.get(job['stage'], job['stage'])} ({hm(job['since'])}부터). 끝나면 결과가 저장되고, "
+                        "'상태 확인'을 누르면 열립니다.")
+            st.button("상태 확인", icon=":material/refresh:", key="run_poll")
+        return True
+    del st.session_state["_run_job"]
+    if job["state"] == "error":
+        st.error("분석이 오류로 중단되었습니다.")
+        st.code(job.get("error", ""))
+        return False
+    if job["folder"] != st.session_state.get("_settings_folder"):       # another site or section was opened meanwhile
+        st.success(f"분석이 끝나 저장되었습니다: {job['out_dir']} — 그 폴더를 열고 '이전 결과 보기'로 불러오세요.")
+        return False
+    for k in _RESULT_STATE:
+        st.session_state.pop(k, None)
+    st.session_state["result"] = job.pop("result")
+    st.session_state["output_dir"] = job["out_dir"]
+    st.session_state["result_key"] = ("run", job["out_dir"], job["finished"])
+    st.session_state["loaded_from"] = None
+    return False
 
 
 def _run_times(result):
@@ -1342,7 +1498,7 @@ def _header(result):
 
 def _main():
     st.title("굴착사면 불연속면 · 지하수 유출통로 분석")
-    st.caption("드론 사진측량 자료(1단계)로 절리를 찾고 물길과 그라우팅 계획을 검토합니다. 라이다·열화상 융합은 2단계에서 추가됩니다.")
+    st.caption("드론 사진측량·라이다 점군에서 절리를 찾고, 유출 가능성·열화상·안정성과 그라우팅 계획을 검토합니다.")
 
     with st.sidebar:
         st.subheader(":material/folder_open: 1 · 현장 자료")
@@ -1370,21 +1526,12 @@ def _main():
             load_clicked = st.button(f"이전 결과 보기 ({when:%Y-%m-%d %H:%M})", icon=":material/history:", width="stretch",
                                      help="이 폴더에 저장된 마지막 분석 결과를 다시 계산하지 않고 불러옵니다.")
 
-    if run_clicked:
-        import time
-
-        for k in _RESULT_STATE:
-            st.session_state.pop(k, None)
-        with st.spinner("자료를 읽고 불연속면을 추출하는 중..."):
-            result = run_pipeline(cfg)
-            st.session_state["result"] = result
-            st.session_state["output_dir"] = cfg["paths"].get("output_dir", "data/processed/output")
-        with st.spinner("결과를 저장하는 중..."):
-            t_save = time.perf_counter()
-            save_results(result, st.session_state["output_dir"])
-            result.timings["save"] = round(time.perf_counter() - t_save, 1)
-        st.session_state["result_key"] = ("run", st.session_state["output_dir"], time.time())
-        st.session_state["loaded_from"] = None
+    running = _take_run()                      # a finished run's result comes on screen here
+    if run_clicked and running:
+        st.toast("분석이 이미 진행 중입니다.", icon=":material/hourglass_top:")
+    elif run_clicked:                          # asks first when a result would be replaced
+        out_new = cfg["paths"].get("output_dir", "data/processed/output")
+        _run_dialog(cfg, _run_notes(prev, out_new), _last_timings(out_new))
     elif load_clicked:
         for k in _RESULT_STATE:
             st.session_state.pop(k, None)
@@ -1396,9 +1543,14 @@ def _main():
             st.session_state["loaded_from"] = prev
 
     result = st.session_state.get("result")
+    site_views = mode == "현장 폴더" and _site_has_views()
     if result is None:
         st.info("왼쪽에서 현장 자료 폴더를 고르고 **분석 실행**을 누르세요. "
-                "처음에는 합성 데모 자료(data/raw/demo_site)가 선택되어 있습니다.")
+                "처음에는 합성 데모 자료(data/raw/demo_site)가 선택되어 있습니다."
+                + (f" 아래 **{SITE_GROUP}** 화면(라이다 단면, 모든 구간의 결과 모음)은 분석 결과를 열지 않아도 볼 수 있습니다."
+                   if site_views else ""))
+        if site_views:                         # these views read the site folder, not the result on screen
+            _show_views(None, {SITE_GROUP: VIEW_GROUPS[SITE_GROUP]})
         return
 
     if st.session_state.get("loaded_from"):
@@ -1423,65 +1575,85 @@ def _main():
         url = _open_facade_tool(out_dir, st.session_state.get("site_folder"))
         st.sidebar.markdown(f"새 탭이 안 열리면 [여기]({url}). 저장 후 **분석 실행**을 다시 누르세요.")
 
-    ref_folder = _reference_folder(result)
-    names = ["3D", "절리군 지도", "스테레오넷", "트레이스", "유출 가능성", "열화상", "그라우팅 입력", "안정성 검토", "라이다 단면", "지중 절리 (현장)", "굴착면 구분", "표",
-             "현장 검증", "보고서"]
-    if ref_folder:
-        names.append("암각화 (참고 이미지)")
-    # only the chosen view is computed and sent to the browser (st.tabs would run and send all of them)
-    if st.session_state.get("view") not in names:
-        st.session_state["view"] = names[0]
-    view = st.segmented_control("화면", names, key="view", label_visibility="collapsed", required=True,
-                                format_func=lambda n: f":material/{VIEW_ICONS.get(n, 'circle')}: {n}") or names[0]
-    if view == "암각화 (참고 이미지)":
-        render_reference_overlays(result, ref_folder)
-    elif view == "3D":
-        render_3d_view(result)
-    elif view == "절리군 지도":
-        render_setmap(result)
-    elif view == "스테레오넷":
-        render_stereonet(result)
-    elif view == "트레이스":
-        render_planar_redetect(result)
-        render_trace_map(result)
-        ft = families_table(result.trace_families, result.wall_frame, result.discontinuity_sets)
-        if len(ft):
-            st.subheader("트레이스 방향군")
-            st.dataframe(ft, width="stretch")
-            st.caption("linked_3d_set = 입면에 나타나는 각도가 맞는 3차원 절리군. '1 또는 2'처럼 둘 이상이면 그 절리군들이 이 "
-                       "벽면에서 같은 각도의 선을 만들어 각도만으로는 가를 수 없다는 뜻입니다 (방향군 색은 첫 번째 절리군). "
-                       "linked_3d_set이 비어 있는 방향군은 3차원 면으로 잡히지 않은 절리(주로 벽면을 가로지르는 절리)입니다. "
-                       "est_dip/est_dip_direction은 트레이스들의 3차원 방향에서 추정한 값이며, 벽면이 평평하면 정할 수 없습니다.")
-        angles = _figure(result, "trace_angles")
-        if angles:
-            st.image(angles)
-    elif view == "유출 가능성":
-        render_seepage(result)
-    elif view == "열화상":
-        render_thermal(result)
-    elif view == "그라우팅 입력":
-        render_grouting(result)
-    elif view == "안정성 검토":
-        render_kinematics(result)
-    elif view == "라이다 단면":
-        render_lidar_section(result)
-    elif view == "지중 절리 (현장)":
-        render_site_joints(result)
-    elif view == "굴착면 구분":
-        render_exposure(result)
-    elif view == "표":
-        render_tables(result)
-    elif view == "현장 검증":
-        render_validation(result)
-    elif view == "보고서":
-        rp = Path(out_dir) / report.REPORT_NAME
-        if st.button("보고서 다시 만들기"):
-            report.build_report(result, out_dir)
-        if rp.exists():
-            st.download_button("분석 보고서 내려받기 (HTML)", rp.read_bytes(), file_name=f"{result.config.get('site_name', '')}_{report.REPORT_NAME}")
-            st.caption(f"저장 위치: {rp} — 브라우저로 열고 인쇄하면 PDF로 만들 수 있습니다.")
-        else:
-            st.info("아직 보고서가 없습니다. '보고서 다시 만들기'를 누르세요.")
+    has_ref = _reference_folder(result) is not None
+    _show_views(result, {g: [v for v in views if v != REFERENCE_VIEW or has_ref] for g, views in VIEW_GROUPS.items()})
+
+
+# The views, grouped by what they are for. The views of SITE_GROUP read the site folder (every section's saved
+# result, the LiDAR scan), not the result on screen, so they are offered without one too.
+REFERENCE_VIEW = "암각화 (참고 이미지)"
+SITE_GROUP = "현장 전체"
+VIEW_GROUPS = {"절리": ["3D", "절리군 지도", "스테레오넷", "트레이스"],
+               "유출·그라우팅": ["유출 가능성", "열화상", "그라우팅 입력"],
+               "안정성": ["안정성 검토"],
+               SITE_GROUP: ["라이다 단면", "지중 절리 (현장)", "굴착면 구분", "현장 전체 3D"],
+               "결과물": ["표", "현장 검증", "보고서", REFERENCE_VIEW]}
+GROUP_ICONS = {"절리": "polyline", "유출·그라우팅": "water_drop", "안정성": "warning", SITE_GROUP: "public",
+               "결과물": "summarize"}
+
+
+def _site_has_views() -> bool:
+    """Whether the site folder holds anything for the site-wide views: a LiDAR scan or a saved result."""
+    from groundwater.viz import site3d
+
+    site = Path(str(st.session_state.get("site_folder", "")).strip().strip('"'))
+    return site.is_dir() and (bool(st.session_state.get("_site_lidar")) or bool(site3d.section_results(site)))
+
+
+def _show_views(result, groups: dict):
+    """The navigation -- the group, then the views of that group -- and the chosen view. Only that view is computed
+    and sent to the browser (st.tabs would run and send all of them). Each group reopens on its last view."""
+    renderers = {"3D": render_3d_view, "절리군 지도": render_setmap, "스테레오넷": render_stereonet,
+                 "트레이스": render_traces, "유출 가능성": render_seepage, "열화상": render_thermal,
+                 "그라우팅 입력": render_grouting, "안정성 검토": render_kinematics, "라이다 단면": render_lidar_section,
+                 "지중 절리 (현장)": render_site_joints, "굴착면 구분": render_exposure, "현장 전체 3D": render_site_tiles,
+                 "표": render_tables, "현장 검증": render_validation, "보고서": render_report,
+                 REFERENCE_VIEW: lambda r: render_reference_overlays(r, _reference_folder(r))}
+    names = list(groups)
+    group = names[0]
+    if len(names) > 1:                         # (the site group alone, without a result, is not a choice to keep)
+        cur = st.session_state.get("nav_group")
+        st.session_state["nav_group"] = cur if cur in names else names[0]       # assigned in every run, see _w
+        group = st.segmented_control("화면 묶음", names, key="nav_group", label_visibility="collapsed", required=True,
+                                     format_func=lambda g: f":material/{GROUP_ICONS[g]}: {g}") or names[0]
+    views = groups[group]
+    last = st.session_state.setdefault("_nav_last", {})
+    key = f"nav_view_{group}"
+    # the state of a view row that was not drawn (another group was open) is gone: start it from the group's last view
+    cur = st.session_state.get(key, last.get(group))
+    st.session_state[key] = cur if cur in views else views[0]
+    view = st.pills(group, views, key=key, required=True, label_visibility="visible" if len(names) == 1 else "collapsed",
+                    format_func=lambda n: f":material/{VIEW_ICONS.get(n, 'circle')}: {n}") or views[0]
+    last[group] = view
+    renderers[view](result)
+
+
+def render_traces(result):
+    render_planar_redetect(result)
+    render_trace_map(result)
+    ft = families_table(result.trace_families, result.wall_frame, result.discontinuity_sets)
+    if len(ft):
+        st.subheader("트레이스 방향군")
+        st.dataframe(ft, width="stretch")
+        st.caption("linked_3d_set = 입면에 나타나는 각도가 맞는 3차원 절리군. '1 또는 2'처럼 둘 이상이면 그 절리군들이 이 "
+                   "벽면에서 같은 각도의 선을 만들어 각도만으로는 가를 수 없다는 뜻입니다 (방향군 색은 첫 번째 절리군). "
+                   "linked_3d_set이 비어 있는 방향군은 3차원 면으로 잡히지 않은 절리(주로 벽면을 가로지르는 절리)입니다. "
+                   "est_dip/est_dip_direction은 트레이스들의 3차원 방향에서 추정한 값이며, 벽면이 평평하면 정할 수 없습니다.")
+    angles = _figure(result, "trace_angles")
+    if angles:
+        st.image(angles)
+
+
+def render_report(result):
+    out_dir = st.session_state["output_dir"]
+    rp = Path(out_dir) / report.REPORT_NAME
+    if st.button("보고서 다시 만들기"):
+        report.build_report(result, out_dir)
+    if rp.exists():
+        st.download_button("분석 보고서 내려받기 (HTML)", rp.read_bytes(), file_name=f"{result.config.get('site_name', '')}_{report.REPORT_NAME}")
+        st.caption(f"저장 위치: {rp} — 브라우저로 열고 인쇄하면 PDF로 만들 수 있습니다.")
+    else:
+        st.info("아직 보고서가 없습니다. '보고서 다시 만들기'를 누르세요.")
 
 
 @st.cache_resource(max_entries=2, show_spinner=False)
@@ -1745,48 +1917,54 @@ def render_exposure(result):
         R = P[P["exposure"] == cl]
         m[i + 1].metric(X.CLASSES[cl], f"{100 * R['area_m2'].sum() / tot:.0f}% (면적)", f"면 {len(R):,}개",
                         delta_color="off")
+    # dynamic tabs: only the open one is built (plain st.tabs builds all five on every rerun)
     tabs = st.tabs([":material/bar_chart: 구간·절리군별", ":material/explore: 스테레오넷", ":material/view_week: 입면",
-                    ":material/map: 평면", ":material/table_chart: 면 목록"])
-    with tabs[0]:
-        st.plotly_chart(EV.bar_figure(P), width="stretch", key="ex_bar")
-        st.dataframe(EV.table(P), hide_index=True, width="stretch")
-        st.caption("거칠기 = 면 점들의 평면 오차(RMS). 이 자료에서는 벽면 평행 면과 교차 면의 거칠기가 거의 같아서 거칠기만으로 "
-                   "발파면을 가려내기는 어렵습니다 (현장에서 발파공 흔적·풍화·충전물로 확인 필요).")
-    with tabs[1]:
-        st.image(_session_cache("_ex_st", (tuple(pick), par, flat, variant), lambda: EV.stereonets_png(P)),
-                 width="stretch")
-        st.markdown("**교차·수평 면만으로 다시 찾은 방향** (면 개수 기준)")
-        R = _session_cache("_ex_refind", (tuple(pick), par, flat, variant), lambda: EV.refind(P))
-        if len(R):
-            st.dataframe(R, hide_index=True)
-        else:
-            st.caption("뚜렷한 방향이 없습니다.")
-        st.caption("면은 분석에서 찾은 절리군의 방향으로만 만들어지므로, 여기서는 그 절리군들 중 벽을 가로지르는 쪽이 어디인지만 "
-                   "보입니다. 벽면 평행 면에 가려진 다른 절리군을 찾으려면 분석 설정의 '절벽면(굴착면)과 평행한 면은 절리군 "
-                   "찾기에서 빼기'를 켜고 다시 분석하세요.")
-    with tabs[2]:
-        for n in pick:
-            Q = P[P["section"] == n]
-            if len(Q):
-                _figure_window(EV.elevation_figure(Q, Q["folder"].iloc[0]), f"ex_elev_{n.split('_')[0]}", 520,
-                               f"새 창에서 크게 보기 — {n} 입면")
-    with tabs[3]:
-        orthos = LV.find_orthos(site)
-        lo, hi = P[["centroid_x", "centroid_y"]].min().to_numpy() - 40, P[["centroid_x", "centroid_y"]].max().to_numpy() + 40
-        bg = _session_cache("_ex_bg", (str(orthos[0]) if orthos else "", tuple(np.round(np.r_[lo, hi], 1))),
-                            lambda: LV.ortho_image(orthos[0], [lo[0], hi[0], lo[1], hi[1]], 1600) if orthos else None)
-        _figure_window(EV.plan_figure(P, bg), "ex_plan", 820, "새 창에서 크게 보기 — 평면")
-    with tabs[4]:
-        T = P[["section", "set_label", "patch_id", "dip", "dip_direction", "area_m2", "roughness_rms_m", "wall_az",
-               "wall_angle_deg", "exposure", "chainage_m", "elevation_m", "centroid_x", "centroid_y", "centroid_z"]].copy()
-        T["exposure"] = T["exposure"].map(X.CLASSES)
-        T = T.rename(columns={"section": "구간", "set_label": "절리군", "patch_id": "면", "dip": "경사",
-                              "dip_direction": "경사방향", "area_m2": "면적 (m²)", "roughness_rms_m": "거칠기 (m)",
-                              "wall_az": "벽면 법선 방위", "wall_angle_deg": "벽면과의 각 (°)", "exposure": "구분",
-                              "chainage_m": "측점", "elevation_m": "표고"}).round(2)
-        st.dataframe(T, hide_index=True, width="stretch")
-        st.download_button("CSV 내려받기", T.to_csv(index=False).encode("utf-8-sig"), "절리면_굴착면구분.csv", "text/csv",
-                           icon=":material/download:")
+                    ":material/map: 평면", ":material/table_chart: 면 목록"], on_change="rerun", key="ex_tab")
+    if tabs[0].open:
+        with tabs[0]:
+            st.plotly_chart(EV.bar_figure(P), width="stretch", key="ex_bar")
+            st.dataframe(EV.table(P), hide_index=True, width="stretch")
+            st.caption("거칠기 = 면 점들의 평면 오차(RMS). 이 자료에서는 벽면 평행 면과 교차 면의 거칠기가 거의 같아서 거칠기만으로 "
+                       "발파면을 가려내기는 어렵습니다 (현장에서 발파공 흔적·풍화·충전물로 확인 필요).")
+    if tabs[1].open:
+        with tabs[1]:
+            st.image(_session_cache("_ex_st", (tuple(pick), par, flat, variant), lambda: EV.stereonets_png(P)),
+                     width="stretch")
+            st.markdown("**교차·수평 면만으로 다시 찾은 방향** (면 개수 기준)")
+            R = _session_cache("_ex_refind", (tuple(pick), par, flat, variant), lambda: EV.refind(P))
+            if len(R):
+                st.dataframe(R, hide_index=True)
+            else:
+                st.caption("뚜렷한 방향이 없습니다.")
+            st.caption("면은 분석에서 찾은 절리군의 방향으로만 만들어지므로, 여기서는 그 절리군들 중 벽을 가로지르는 쪽이 어디인지만 "
+                       "보입니다. 벽면 평행 면에 가려진 다른 절리군을 찾으려면 분석 설정의 '절벽면(굴착면)과 평행한 면은 절리군 "
+                       "찾기에서 빼기'를 켜고 다시 분석하세요.")
+    if tabs[2].open:
+        with tabs[2]:
+            for n in pick:
+                Q = P[P["section"] == n]
+                if len(Q):
+                    _figure_window(EV.elevation_figure(Q, Q["folder"].iloc[0]), f"ex_elev_{n.split('_')[0]}", 520,
+                                   f"새 창에서 크게 보기 — {n} 입면")
+    if tabs[3].open:
+        with tabs[3]:
+            orthos = LV.find_orthos(site)
+            lo, hi = P[["centroid_x", "centroid_y"]].min().to_numpy() - 40, P[["centroid_x", "centroid_y"]].max().to_numpy() + 40
+            bg = _session_cache("_ex_bg", (str(orthos[0]) if orthos else "", tuple(np.round(np.r_[lo, hi], 1))),
+                                lambda: LV.ortho_image(orthos[0], [lo[0], hi[0], lo[1], hi[1]], 1600) if orthos else None)
+            _figure_window(EV.plan_figure(P, bg), "ex_plan", 820, "새 창에서 크게 보기 — 평면")
+    if tabs[4].open:
+        with tabs[4]:
+            T = P[["section", "set_label", "patch_id", "dip", "dip_direction", "area_m2", "roughness_rms_m", "wall_az",
+                   "wall_angle_deg", "exposure", "chainage_m", "elevation_m", "centroid_x", "centroid_y", "centroid_z"]].copy()
+            T["exposure"] = T["exposure"].map(X.CLASSES)
+            T = T.rename(columns={"section": "구간", "set_label": "절리군", "patch_id": "면", "dip": "경사",
+                                  "dip_direction": "경사방향", "area_m2": "면적 (m²)", "roughness_rms_m": "거칠기 (m)",
+                                  "wall_az": "벽면 법선 방위", "wall_angle_deg": "벽면과의 각 (°)", "exposure": "구분",
+                                  "chainage_m": "측점", "elevation_m": "표고"}).round(2)
+            st.dataframe(T, hide_index=True, width="stretch")
+            st.download_button("CSV 내려받기", T.to_csv(index=False).encode("utf-8-sig"), "절리면_굴착면구분.csv", "text/csv",
+                               icon=":material/download:")
 
 
 def render_site_joints(result):
@@ -1846,94 +2024,101 @@ def render_site_joints(result):
     m[1].metric("현장 절리군", F["group"].nunique())
     m[2].metric("연속 가능면", f"{len(C):,}", help="같은 평면 위의 면 2개 이상")
     m[3].metric("여러 구간에 걸친 연속 가능면", int(C["sections"].str.contains("·").sum()) if len(C) else 0)
+    # dynamic tabs: only the open one is built
     tabs = st.tabs([":material/view_in_ar: 3D", ":material/satellite_alt: 정사영상 위 절리", ":material/layers: 수평 단면",
-                    ":material/vertical_split: 수직 단면", ":material/table_chart: 연속 가능면 표"])
+                    ":material/vertical_split: 수직 단면", ":material/table_chart: 연속 가능면 표"],
+                   on_change="rerun", key="sj_tab")
     orthos = LV.find_orthos(site)
-    with tabs[0]:
-        cc = st.columns([1.4, 3], vertical_alignment="center")
-        under = cc[0].toggle("연장 부분은 땅속만", value=True, key="sj_under",
-                             help="연장한 원판 중 지표 위로 나오는 부분은 그리지 않습니다 (공중으로 뻗은 부분).")
-        with cc[1].popover("실사 타일 모델 위에 보기 (새 탭)", icon=":material/public:"):
-            tp = str(st.session_state.get("site3d_tiles") or _saved("site3d_tiles", "")).strip()
-            tiles = tiles3d.find_tileset(tp) if tp else tiles3d.find_tileset(site)
-            st.caption(f"타일 모델: `{tiles.name if tiles else '없음'}` (현장 폴더에서 가장 큰 .3tz, '3D 보기 → 현장 전체 실사 "
-                       "3D'에서 바꿀 수 있음). 관측 면, 땅속으로 연장한 면(반투명), 연속 가능면 범위, 지표 교선을 올립니다. "
-                       "모델을 반투명으로 시작해서 땅속이 보입니다 (CesiumJS, 인터넷 연결 필요).")
-            m_alpha = st.slider("처음 표면 불투명도", 0.1, 1.0, 0.5, 0.05, key="sj_model_alpha")
-            if st.button("장면 열기", icon=":material/open_in_new:", disabled=tiles is None or ground is None):
-                with st.spinner("장면을 만드는 중..."):
-                    scene = V.tiles_scene(site, F, C, float(factor), ground, tiles, full, float(full_span),
-                                          float(m_alpha), variant)
-                    path = tiles3d.write_scene(site / "현장전체_지중절리_3D장면.json", scene)
-                url = _open_tiles_viewer(path)
-                st.markdown(f"새 탭이 열리지 않으면 [여기]({url})를 누르세요. 장면 파일: `{path.name}`")
-        fig = _session_cache("_sj_3d", (key, factor, under), lambda: V.figure_3d(F, C, float(factor), ground, True, True, under))
-        _view3d(fig, "sj_3d", 760)
-    with tabs[1]:
-        if ground is None:
-            st.info("지표 DTM이 없어 지표 교선은 그릴 수 없습니다 (주향·경사 기호만).")
-        cc = st.columns([1.6, 1.3, 1.3, 1], vertical_alignment="bottom")
-        sym = cc[0].segmented_control("주향·경사 기호", ["연속 가능면", "모든 관측 면", "없음"], **_w("sj_sym", "연속 가능면"),
-                                      help="기호: 긴 선 = 주향, 짧은 선 = 경사 방향(80° 이상은 생략), 숫자 = 경사.")
-        dl = cc[1].toggle(f"×{factor:g} 연장 면의 지표 교선", **_w("sj_disc_lines", True),
-                          help="연장한 원판이 지표(DTM)와 만나는 선: 지표에 그 절리가 드러날 것으로 예상되는 자리.")
-        sym_m = cc[3].number_input("기호 크기 (m)", 2.0, 30.0, **_w("sj_sym_m", 8.0), step=1.0)
-        cc[2].caption("점선(연속 가능면 끝까지의 지표 교선)은 위의 '끝까지 연장' 스위치를 따릅니다.")
-        bg = _session_cache("_sj_bg", (str(orthos[0]) if orthos else "", tuple(np.round(np.r_[lo, hi], 1))),
-                            lambda: LV.ortho_image(orthos[0], [lo[0], hi[0], lo[1], hi[1]], 1600) if orthos else None)
-        smode = {"연속 가능면": "planes", "모든 관측 면": "faces", "없음": "none"}.get(sym or "없음", "none")
-        _figure_window(_session_cache("_sj_ortho", (key, factor, smode, dl, full, full_span, sym_m, str(orthos[:1])),
-                                      lambda: V.ortho_map(F, C, float(factor), ground, bg, smode, dl, full,
-                                                          float(full_span), float(sym_m))),
-                       "sj_ortho", 860, "새 창에서 크게 보기 — 정사영상 위 절리 (휠 확대·축소)")
-        st.caption("실선 = 관측 면을 연장한 면이 지표와 만나는 선(지표에 드러날 것으로 예상되는 자리), 점선 = 연속 가능면을 끝까지 "
-                   "이었을 때의 지표 교선(가정). 지표는 맨땅 DTM이라 나무 아래 땅 기준입니다. 점에 마우스를 올리면 방향·크기.")
-    with tabs[2]:
-        zlo, zhi = float(np.floor(F["z"].min())) - 20, float(np.ceil(F["z"].max())) + 10
-        z0 = st.slider("표고 (m, 해발)", zlo, zhi, value=float(round(F["z"].median())), step=1.0, key="sj_z")
-        bg = _session_cache("_sj_bg", (str(orthos[0]) if orthos else "", tuple(np.round(np.r_[lo, hi], 1))),
-                            lambda: LV.ortho_image(orthos[0], [lo[0], hi[0], lo[1], hi[1]], 1600) if orthos else None)
-        _figure_window(V.plan_figure(F, C, float(factor), z0, ground, bg, planes_full=full,
-                                     full_min_span=float(full_span)), "sj_plan", 860,
-                       "새 창에서 크게 보기 — 수평 단면 (휠 확대·축소)")
-        st.caption("노랑 바탕 = 그 표고에서 땅속인 곳 (DTM 위). 선 = 절리면(연장 포함)이 그 표고의 수평면을 지나는 자리, 굵은 선 = "
-                   "연속 가능면, 점선 = 연속 가능면을 끝까지 이은 가정.")
-    with tabs[3]:
-        line = st.session_state.get("sj_line") or st.session_state.get("ls_line")
-        if not line:                                           # across the middle of the site, west to east
-            cy = float((lo[1] + hi[1]) / 2)
-            line = ((float(lo[0] + 60), cy), (float(hi[0] - 60), cy))
-        cc = st.columns(5, vertical_alignment="bottom")
-        ax_ = cc[0].number_input("A x", value=float(line[0][0]), format="%.1f", key="sj_ax")
-        ay_ = cc[1].number_input("A y", value=float(line[0][1]), format="%.1f", key="sj_ay")
-        bx_ = cc[2].number_input("B x", value=float(line[1][0]), format="%.1f", key="sj_bx")
-        by_ = cc[3].number_input("B y", value=float(line[1][1]), format="%.1f", key="sj_by")
-        if cc[4].button("라이다 단면 선 쓰기", disabled=not st.session_state.get("ls_line"), width="stretch",
-                        help="'라이다 단면' 화면에서 마지막으로 그린 선"):
-            st.session_state["sj_line"] = st.session_state["ls_line"]
-            for k_ in ("sj_ax", "sj_ay", "sj_bx", "sj_by"):
-                st.session_state.pop(k_, None)
-            st.rerun()
-        a, b = (ax_, ay_), (bx_, by_)
-        st.session_state["sj_line"] = (a, b)
-        if np.hypot(bx_ - ax_, by_ - ay_) < 5:
-            st.info("선이 너무 짧습니다.")
-        else:
-            _figure_window(V.section_figure(F, C, float(factor), a, b, ground, planes_full=full,
-                                             full_min_span=float(full_span)), "sj_section", 640,
-                           "새 창에서 크게 보기 — 수직 단면 (휠 확대·축소)")
-            st.caption("회색 = 땅속 (DTM 아래). 선 = 절리면(연장 포함)이 이 수직면을 지나는 자리. 좌표는 EPSG:5186 (평면도·"
-                       "라이다 단면 화면과 같음).")
-    with tabs[4]:
-        if not len(C):
-            st.info("연속 가능면이 없습니다.")
-        else:
-            T = C[["id", "group_label", "sections", "n", "span_m", "area_m2", "dip", "dd", "rms_m", "x", "y", "z"]].rename(
-                columns={"group_label": "현장 절리군", "sections": "구간", "n": "면 수", "span_m": "길이 (m)",
-                         "area_m2": "관측 면적 (m²)", "dip": "경사", "dd": "경사방향", "rms_m": "평면 오차 (m)"}).round(1)
-            st.dataframe(T, hide_index=True, width="stretch")
-            st.download_button("CSV 내려받기", T.to_csv(index=False).encode("utf-8-sig"), "연속가능_불연속면.csv",
-                               "text/csv", icon=":material/download:")
+    if tabs[0].open:
+        with tabs[0]:
+            cc = st.columns([1.4, 3], vertical_alignment="center")
+            under = cc[0].toggle("연장 부분은 땅속만", value=True, key="sj_under",
+                                 help="연장한 원판 중 지표 위로 나오는 부분은 그리지 않습니다 (공중으로 뻗은 부분).")
+            with cc[1].popover("실사 타일 모델 위에 보기 (새 탭)", icon=":material/public:"):
+                tp = str(st.session_state.get("site3d_tiles") or _saved("site3d_tiles", "")).strip()
+                tiles = tiles3d.find_tileset(tp) if tp else tiles3d.find_tileset(site)
+                st.caption(f"타일 모델: `{tiles.name if tiles else '없음'}` (현장 폴더에서 가장 큰 .3tz, '현장 전체 → 현장 전체 "
+                           "3D'에서 바꿀 수 있음). 관측 면, 땅속으로 연장한 면(반투명), 연속 가능면 범위, 지표 교선을 올립니다. "
+                           "모델을 반투명으로 시작해서 땅속이 보입니다 (CesiumJS, 인터넷 연결 필요).")
+                m_alpha = st.slider("처음 표면 불투명도", 0.1, 1.0, 0.5, 0.05, key="sj_model_alpha")
+                if st.button("장면 열기", icon=":material/open_in_new:", disabled=tiles is None or ground is None):
+                    with st.spinner("장면을 만드는 중..."):
+                        scene = V.tiles_scene(site, F, C, float(factor), ground, tiles, full, float(full_span),
+                                              float(m_alpha), variant)
+                        path = tiles3d.write_scene(site / "현장전체_지중절리_3D장면.json", scene)
+                    url = _open_tiles_viewer(path)
+                    st.markdown(f"새 탭이 열리지 않으면 [여기]({url})를 누르세요. 장면 파일: `{path.name}`")
+            fig = _session_cache("_sj_3d", (key, factor, under), lambda: V.figure_3d(F, C, float(factor), ground, True, True, under))
+            _view3d(fig, "sj_3d", 760)
+    if tabs[1].open:
+        with tabs[1]:
+            if ground is None:
+                st.info("지표 DTM이 없어 지표 교선은 그릴 수 없습니다 (주향·경사 기호만).")
+            cc = st.columns([1.6, 1.3, 1.3, 1], vertical_alignment="bottom")
+            sym = cc[0].segmented_control("주향·경사 기호", ["연속 가능면", "모든 관측 면", "없음"], **_w("sj_sym", "연속 가능면"),
+                                          help="기호: 긴 선 = 주향, 짧은 선 = 경사 방향(80° 이상은 생략), 숫자 = 경사.")
+            dl = cc[1].toggle(f"×{factor:g} 연장 면의 지표 교선", **_w("sj_disc_lines", True),
+                              help="연장한 원판이 지표(DTM)와 만나는 선: 지표에 그 절리가 드러날 것으로 예상되는 자리.")
+            sym_m = cc[3].number_input("기호 크기 (m)", 2.0, 30.0, **_w("sj_sym_m", 8.0), step=1.0)
+            cc[2].caption("점선(연속 가능면 끝까지의 지표 교선)은 위의 '끝까지 연장' 스위치를 따릅니다.")
+            bg = _session_cache("_sj_bg", (str(orthos[0]) if orthos else "", tuple(np.round(np.r_[lo, hi], 1))),
+                                lambda: LV.ortho_image(orthos[0], [lo[0], hi[0], lo[1], hi[1]], 1600) if orthos else None)
+            smode = {"연속 가능면": "planes", "모든 관측 면": "faces", "없음": "none"}.get(sym or "없음", "none")
+            _figure_window(_session_cache("_sj_ortho", (key, factor, smode, dl, full, full_span, sym_m, str(orthos[:1])),
+                                          lambda: V.ortho_map(F, C, float(factor), ground, bg, smode, dl, full,
+                                                              float(full_span), float(sym_m))),
+                           "sj_ortho", 860, "새 창에서 크게 보기 — 정사영상 위 절리 (휠 확대·축소)")
+            st.caption("실선 = 관측 면을 연장한 면이 지표와 만나는 선(지표에 드러날 것으로 예상되는 자리), 점선 = 연속 가능면을 끝까지 "
+                       "이었을 때의 지표 교선(가정). 지표는 맨땅 DTM이라 나무 아래 땅 기준입니다. 점에 마우스를 올리면 방향·크기.")
+    if tabs[2].open:
+        with tabs[2]:
+            zlo, zhi = float(np.floor(F["z"].min())) - 20, float(np.ceil(F["z"].max())) + 10
+            z0 = st.slider("표고 (m, 해발)", zlo, zhi, value=float(round(F["z"].median())), step=1.0, key="sj_z")
+            bg = _session_cache("_sj_bg", (str(orthos[0]) if orthos else "", tuple(np.round(np.r_[lo, hi], 1))),
+                                lambda: LV.ortho_image(orthos[0], [lo[0], hi[0], lo[1], hi[1]], 1600) if orthos else None)
+            _figure_window(V.plan_figure(F, C, float(factor), z0, ground, bg, planes_full=full,
+                                         full_min_span=float(full_span)), "sj_plan", 860,
+                           "새 창에서 크게 보기 — 수평 단면 (휠 확대·축소)")
+            st.caption("노랑 바탕 = 그 표고에서 땅속인 곳 (DTM 위). 선 = 절리면(연장 포함)이 그 표고의 수평면을 지나는 자리, 굵은 선 = "
+                       "연속 가능면, 점선 = 연속 가능면을 끝까지 이은 가정.")
+    if tabs[3].open:
+        with tabs[3]:
+            line = st.session_state.get("sj_line") or st.session_state.get("ls_line")
+            if not line:                                           # across the middle of the site, west to east
+                cy = float((lo[1] + hi[1]) / 2)
+                line = ((float(lo[0] + 60), cy), (float(hi[0] - 60), cy))
+            cc = st.columns(5, vertical_alignment="bottom")
+            ax_ = cc[0].number_input("A x", value=float(line[0][0]), format="%.1f", key="sj_ax")
+            ay_ = cc[1].number_input("A y", value=float(line[0][1]), format="%.1f", key="sj_ay")
+            bx_ = cc[2].number_input("B x", value=float(line[1][0]), format="%.1f", key="sj_bx")
+            by_ = cc[3].number_input("B y", value=float(line[1][1]), format="%.1f", key="sj_by")
+            if cc[4].button("라이다 단면 선 쓰기", disabled=not st.session_state.get("ls_line"), width="stretch",
+                            help="'라이다 단면' 화면에서 마지막으로 그린 선"):
+                st.session_state["sj_line"] = st.session_state["ls_line"]
+                for k_ in ("sj_ax", "sj_ay", "sj_bx", "sj_by"):
+                    st.session_state.pop(k_, None)
+                st.rerun()
+            a, b = (ax_, ay_), (bx_, by_)
+            st.session_state["sj_line"] = (a, b)
+            if np.hypot(bx_ - ax_, by_ - ay_) < 5:
+                st.info("선이 너무 짧습니다.")
+            else:
+                _figure_window(V.section_figure(F, C, float(factor), a, b, ground, planes_full=full,
+                                                 full_min_span=float(full_span)), "sj_section", 640,
+                               "새 창에서 크게 보기 — 수직 단면 (휠 확대·축소)")
+                st.caption("회색 = 땅속 (DTM 아래). 선 = 절리면(연장 포함)이 이 수직면을 지나는 자리. 좌표는 EPSG:5186 (평면도·"
+                           "라이다 단면 화면과 같음).")
+    if tabs[4].open:
+        with tabs[4]:
+            if not len(C):
+                st.info("연속 가능면이 없습니다.")
+            else:
+                T = C[["id", "group_label", "sections", "n", "span_m", "area_m2", "dip", "dd", "rms_m", "x", "y", "z"]].rename(
+                    columns={"group_label": "현장 절리군", "sections": "구간", "n": "면 수", "span_m": "길이 (m)",
+                             "area_m2": "관측 면적 (m²)", "dip": "경사", "dd": "경사방향", "rms_m": "평면 오차 (m)"}).round(1)
+                st.dataframe(T, hide_index=True, width="stretch")
+                st.download_button("CSV 내려받기", T.to_csv(index=False).encode("utf-8-sig"), "연속가능_불연속면.csv",
+                                   "text/csv", icon=":material/download:")
     st.caption(f"지표: {gpath.name if gpath else '없음'} · 절리면: " + ", ".join(pick))
 
 

@@ -68,15 +68,27 @@ class PipelineResult:
 
 
 class _Clock:
-    """Seconds per pipeline stage: clock.lap("name") books the time since the previous lap."""
+    """Seconds per pipeline stage: clock.start("name") opens a stage and books the time since the previous start
+    to the stage that was open. `progress(stage, finished, seconds)`, if given, is called at every start with the
+    stage that begins, the one that just ended (None at the first) and how long that one took."""
 
-    def __init__(self):
-        self.t, self.laps = time.perf_counter(), {}
+    def __init__(self, progress=None):
+        self.t, self.laps, self.stage, self.progress = time.perf_counter(), {}, None, progress
 
-    def lap(self, name: str) -> None:
+    def start(self, name: str | None) -> None:
         now = time.perf_counter()
-        self.laps[name] = round(self.laps.get(name, 0.0) + now - self.t, 1)
-        self.t = now
+        done, took = self.stage, None
+        if done is not None:
+            took = round(now - self.t, 1)
+            self.laps[done] = round(self.laps.get(done, 0.0) + took, 1)
+        self.t, self.stage = now, name
+        if self.progress is not None and name is not None:
+            self.progress(name, done, took)
+
+    def finish(self) -> dict:
+        """Close the open stage; the seconds per stage."""
+        self.start(None)
+        return self.laps
 
 
 def load_config(path: str | Path) -> dict:
@@ -200,13 +212,16 @@ def apply_auto_scale(cfg: dict, points: np.ndarray, uv: np.ndarray | None = None
     return applied
 
 
-def run_pipeline(cfg: dict) -> PipelineResult:
+def run_pipeline(cfg: dict, progress=None) -> PipelineResult:
+    """`progress(stage, finished, seconds)` is called as each stage starts (see _Clock): the stage that begins,
+    the one that just ended and its duration -- for a progress display."""
     cfg = copy.deepcopy(cfg)
-    clock = _Clock()
+    clock = _Clock(progress)
+    clock.start("load")
     cloud = _load_input_cloud(cfg)
     prep = cfg.get("preprocessing", {})
     cloud = crop_bbox(cloud, prep.get("crop_bbox"))
-    clock.lap("load")
+    clock.start("frame")
 
     # wall frame first: the analysis region and every facade product are in wall coordinates
     frame_cfg = cfg.get("wall_frame", {})
@@ -226,12 +241,12 @@ def run_pipeline(cfg: dict) -> PipelineResult:
             _section_core(cfg, region["core_polygon"], pts, uvw_cloud)
     if len(pts) == 0:
         raise ValueError("No points left inside the analysis region")
-    clock.lap("frame")
+    clock.start("auto_scale")
 
     if cfg.get("auto_scale"):
         apply_auto_scale(cfg, pts, uvw_cloud[:, :2] if uvw_cloud is not None else frame.to_wall(pts)[:, :2])
         prep = cfg["preprocessing"]
-    clock.lap("auto_scale")
+    clock.start("voxel")
     # green vegetation (by colour) is left out of the joint analysis; the facade image still shows it
     veg = cfg.get("vegetation", {})
     veg_on = veg.get("enabled", True) and cloud.has_colors()
@@ -265,12 +280,12 @@ def run_pipeline(cfg: dict) -> PipelineResult:
         elif air.any():
             pcd = pcd.select_by_index(np.flatnonzero(~air))
         del air
-    clock.lap("voxel")
     # rockfall netting and near-horizontal ground (cleaning.surface_mask) are left out before the extraction:
     # a net draped parallel to the face would otherwise make a "joint set" of its own
     clean = cfg.get("cleaning", {})
     smask = None
     if clean.get("netting", True) or clean.get("flat", True):
+        clock.start("masks")
         uvw0 = frame.to_wall(np.asarray(pcd.points))
         smask = surface_mask(uvw0, np.asarray(pcd.colors) if pcd.has_colors() else None,
                              netting=clean.get("netting", True) and pcd.has_colors(), flat=clean.get("flat", True))
@@ -280,9 +295,9 @@ def run_pipeline(cfg: dict) -> PipelineResult:
                                       "flat": round(float((bits & MASK_FLAT > 0).mean()), 4)}
             pcd = pcd.select_by_index(np.flatnonzero(bits == 0))
         del uvw0
-        clock.lap("masks")
     # LiDAR (multi-return) behind the netting and the vegetation: the rock the photogrammetry cannot see
     if use_lidar and smask is not None:
+        clock.start("lidar")
         import open3d as o3d
 
         from . import lidar
@@ -311,10 +326,10 @@ def run_pipeline(cfg: dict) -> PipelineResult:
                                  "rear_points_outside_face_dropped": L["n_outside_face_dropped"],
                                  "rear_points_gentle_kept_on_face": L.get("n_gentle_kept_on_face", 0),
                                  "rear_points_above_ground_dropped": L.get("n_above_ground_dropped", 0)}
-        clock.lap("lidar")
 
+    clock.start("normals")
     surface_variation = estimate_local_geometry(pcd, **cfg.get("normals", {}))
-    clock.lap("normals")
+    clock.start("joints")
     set_info = {}
     # optional: point normals parallel to the excavated wall (bench / blasted faces, or joints along them) left out
     # of the set detection, so the sets crossing the wall are not outweighed by the wall (discontinuity.exposure)
@@ -338,7 +353,6 @@ def run_pipeline(cfg: dict) -> PipelineResult:
                             "fixed_set_ids": set_info.get("fixed", []), "candidates": set_info.get("candidates", [])}
     if exclude is not None:
         cfg["set_detection"]["wall_parallel_points_left_out"] = int(exclude.sum())
-    clock.lap("joints")
     # faces that are not joints of the wall (cleaning.py): the ground / water in front of the foot and ground /
     # benches reaching back into the slope now, the faces on vegetation once the facade photo exists
     link = cfg.get("patches", {}).get("link_distance", 0.05)
@@ -376,15 +390,16 @@ def run_pipeline(cfg: dict) -> PipelineResult:
         field_comparison=field_comparison,
         surface_mask=smask,
     )
+    clock.start("facade")
     if cloud.has_colors():
         _build_facade(result, cloud, uvw_cloud, uvw_pcd, region, veg_on, veg_thr)
     del cloud
-    clock.lap("facade")
 
     if result.facade_rgb is not None and (cfg.get("planar") or {}).get("folder"):
+        clock.start("planar")
         apply_planar(result, cfg["planar"]["folder"], cfg["planar"].get("resolution_m", 0.02))
-        clock.lap("planar")
     if clean.get("vegetation_faces", True) and veg_on and result.facade_rgb is not None:
+        clock.start("cleaning")
         drop = vegetation_faces(result.discontinuity_sets, frame, result.facade_rgb, result.facade_depth, veg_thr)
         under = canopy_ground_faces(result.discontinuity_sets, frame, result.facade_rgb, result.facade_depth, veg_thr)
         if drop | under:
@@ -393,15 +408,14 @@ def run_pipeline(cfg: dict) -> PipelineResult:
             _after_cleaning(result, uvw_pcd)
         removed["vegetation"] = len(drop)
         removed["ground_under_trees"] = len(under - drop)
-        clock.lap("cleaning")
     cfg["faces_removed"] = removed
 
+    clock.start("kinematics")
     # kinematic screening against the local face (rock points of the analysis cloud)
     result.face_windows = [w for w in face_windows(np.asarray(pcd.points), frame, cfg.get("kinematics", {}).get("window_m", 5.0))
                            if in_core((w["u0"] + w["u1"]) / 2, cfg)]
     _kinematics(result)
-    clock.lap("kinematics")
-    result.timings = clock.laps
+    result.timings = clock.finish()
     return result
 
 

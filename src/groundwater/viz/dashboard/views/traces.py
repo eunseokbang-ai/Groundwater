@@ -7,7 +7,7 @@ import streamlit as st
 from groundwater import report
 from groundwater.discontinuity.trace_sets import families_table, family_tag
 from groundwater.pipeline import save_results
-from groundwater.viz.dashboard.components import MAX_FACADE_DISPLAY_PX, _figure, _map_chart, _planar_input
+from groundwater.viz.dashboard.components import MAX_FACADE_DISPLAY_PX, _figure, _map_chart, _planar_input, _table
 from groundwater.viz.dashboard.state import _result_key, _session_cache
 
 
@@ -117,11 +117,8 @@ def render_traces(result):
     ft = families_table(result.trace_families, result.wall_frame, result.discontinuity_sets)
     if len(ft):
         st.subheader("트레이스 방향군")
-        st.dataframe(ft, width="stretch")
-        st.caption("linked_3d_set = 입면에 나타나는 각도가 맞는 3차원 절리군. '1 또는 2'처럼 둘 이상이면 그 절리군들이 이 "
-                   "벽면에서 같은 각도의 선을 만들어 각도만으로는 가를 수 없다는 뜻입니다 (방향군 색은 첫 번째 절리군). "
-                   "linked_3d_set이 비어 있는 방향군은 3차원 면으로 잡히지 않은 절리(주로 벽면을 가로지르는 절리)입니다. "
-                   "est_dip/est_dip_direction은 트레이스들의 3차원 방향에서 추정한 값이며, 벽면이 평평하면 정할 수 없습니다.")
+        _table(ft)
+        st.caption("열 제목에 마우스를 올리면 그 값의 뜻이 나옵니다.")
     angles = _figure(result, "trace_angles")
     if angles:
         st.image(angles)

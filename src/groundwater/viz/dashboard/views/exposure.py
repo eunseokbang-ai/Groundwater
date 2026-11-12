@@ -2,7 +2,7 @@
 import numpy as np
 import streamlit as st
 
-from groundwater.viz.dashboard.components import _figure_window, _variant_picker
+from groundwater.viz.dashboard.components import _figure_window, _note, _table, _variant_picker
 from groundwater.viz.dashboard.state import _session_cache, _site_dir, _w
 
 
@@ -19,10 +19,11 @@ def render_exposure(result):
     if not secs:
         st.info("구간 결과가 없습니다 (현장 폴더/구간/<이름>/분석결과).")
         return
-    st.caption("석산 벽은 절리를 따라 무너진 면이 아니라 발파·기계로 깎은 면입니다. 그래서 찾은 절리면에는 **굴착면 자체**(벤치면·"
-               "발파면, 또는 그 면을 따라 깨진 절리 — 방향만으로는 구분 안 됨), **소단·바닥**(거의 수평), **벽을 가로지르는 "
-               "절리**가 섞여 있습니다. 벽과 나란한 면은 넓게 드러나고 가로지르는 절리는 좁은 띠·트레이스로만 보여서, 면적으로 "
-               "세면 벽면 평행이 과대평가됩니다. 벽면 방향은 그 자리의 벽(벽선 + 벽 앞면의 굽음, 5 m 규모) 기준입니다.")
+    _note("석산 벽은 발파·기계로 깎은 면이라, 찾은 절리면에는 굴착면 자체·소단·벽을 가로지르는 절리가 섞여 있습니다.",
+          "석산 벽은 절리를 따라 무너진 면이 아니라 발파·기계로 깎은 면입니다. 그래서 찾은 절리면에는 **굴착면 자체**(벤치면·"
+          "발파면, 또는 그 면을 따라 깨진 절리 — 방향만으로는 구분 안 됨), **소단·바닥**(거의 수평), **벽을 가로지르는 "
+          "절리**가 섞여 있습니다. 벽과 나란한 면은 넓게 드러나고 가로지르는 절리는 좁은 띠·트레이스로만 보여서, 면적으로 "
+          "세면 벽면 평행이 과대평가됩니다. 벽면 방향은 그 자리의 벽(벽선 + 벽 앞면의 굽음, 5 m 규모) 기준입니다.")
     c = st.columns([1.2, 3, 1.2, 1.2], vertical_alignment="bottom")
     variant = _variant_picker(site, "ex_variant", c[0])
     names = [n for n, _ in site3d.section_results(site, variant)]
@@ -51,7 +52,7 @@ def render_exposure(result):
     if tabs[0].open:
         with tabs[0]:
             st.plotly_chart(EV.bar_figure(P), width="stretch", key="ex_bar")
-            st.dataframe(EV.table(P), hide_index=True, width="stretch")
+            _table(EV.table(P))
             st.caption("거칠기 = 면 점들의 평면 오차(RMS). 이 자료에서는 벽면 평행 면과 교차 면의 거칠기가 거의 같아서 거칠기만으로 "
                        "발파면을 가려내기는 어렵습니다 (현장에서 발파공 흔적·풍화·충전물로 확인 필요).")
     if tabs[1].open:
@@ -61,7 +62,7 @@ def render_exposure(result):
             st.markdown("**교차·수평 면만으로 다시 찾은 방향** (면 개수 기준)")
             R = _session_cache("_ex_refind", (tuple(pick), par, flat, variant), lambda: EV.refind(P))
             if len(R):
-                st.dataframe(R, hide_index=True)
+                _table(R, width="content")
             else:
                 st.caption("뚜렷한 방향이 없습니다.")
             st.caption("면은 분석에서 찾은 절리군의 방향으로만 만들어지므로, 여기서는 그 절리군들 중 벽을 가로지르는 쪽이 어디인지만 "
@@ -90,6 +91,6 @@ def render_exposure(result):
                                   "dip_direction": "경사방향", "area_m2": "면적 (m²)", "roughness_rms_m": "거칠기 (m)",
                                   "wall_az": "벽면 법선 방위", "wall_angle_deg": "벽면과의 각 (°)", "exposure": "구분",
                                   "chainage_m": "측점", "elevation_m": "표고"}).round(2)
-            st.dataframe(T, hide_index=True, width="stretch")
+            _table(T)
             st.download_button("CSV 내려받기", T.to_csv(index=False).encode("utf-8-sig"), "절리면_굴착면구분.csv", "text/csv",
                                icon=":material/download:")

@@ -2,7 +2,8 @@
 import pandas as pd
 import streamlit as st
 
-from groundwater.viz.dashboard.components import _map_chart, _session_tiles_input, _tiles_scene_button, _view3d
+from groundwater.viz.dashboard.components import (_choice, _map_chart, _session_tiles_input, _table,
+    _tiles_scene_button, _view3d)
 from groundwater.viz.dashboard.state import _fragment, _range_state, _result_key, _session_cache, _w
 
 
@@ -32,9 +33,9 @@ def render_kinematics(result):
     if not ws:
         st.info("벽면 방향을 구하지 못했습니다.")
         return
-    scope = c[2].radio("평사투영 범위", ["벽 전체", "측점 구간"], horizontal=True, **_w("kin_scope", "벽 전체"),
-                       help="벽 전체: 대표 벽면 하나와 모든 절리면. 측점 구간: 그 구간의 벽면(5 m 구간 벽면의 중앙값)과 "
-                            "그 구간 안의 절리면만 — 벽이 꺾이거나 오버행인 곳을 따로 보는 구간(도메인) 해석.")
+    scope = _choice("평사투영 범위", ["벽 전체", "측점 구간"], c[2], **_w("kin_scope", "벽 전체"),
+                    help="벽 전체: 대표 벽면 하나와 모든 절리면. 측점 구간: 그 구간의 벽면(5 m 구간 벽면의 중앙값)과 "
+                         "그 구간 안의 절리면만 — 벽이 꺾이거나 오버행인 곳을 따로 보는 구간(도메인) 해석.")
     bounds = sorted({round(w["u0"], 1) for w in ws} | {round(w["u1"], 1) for w in ws})
     u_range = None
     if scope == "측점 구간":
@@ -65,7 +66,7 @@ def render_kinematics(result):
         rows = _session_cache("_kin_domains", (_result_key(), phi, lat), lambda: KV.domain_table(result, phi, lat))
         pct = {k: st.column_config.ProgressColumn(k, min_value=0, max_value=100, format="%d%%")
                for k in ("평면 %", "쐐기 %", "전도 %")}
-        st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch", column_config=pct)
+        _table(rows, pct)
         st.caption("벽 전체 대표 벽면 하나로 본 비율과 달리, 벽이 꺾이거나 오버행인 구간마다 비율이 달라지는 것을 봅니다. "
                    "절리면이 적은 구간(30개 미만)의 비율은 흔들림이 큽니다.")
 
@@ -74,10 +75,13 @@ def render_kinematics(result):
         if k is None or not len(k):
             st.success("검토한 구간에서 운동학적으로 가능한 파괴 형태가 없습니다.")
         else:
-            st.dataframe(k.groupby(["mode", "joints"]).size().reset_index(name="구간 수"), width="stretch")
-            st.dataframe(k, width="stretch")
+            st.markdown("**파괴 형태·절리군별 구간 수**")
+            _table(k.groupby(["mode", "joints"]).size().reset_index(name="구간 수"))
+            st.markdown("**구간마다 가능한 파괴**")
+            _table(k)
         if result.face_windows:
-            st.dataframe(pd.DataFrame(result.face_windows).round(1), width="stretch")
+            st.markdown("**구간별 벽면**")
+            _table(pd.DataFrame(result.face_windows).round(1))
 
     st.markdown("##### :material/map: 파괴 가능 구역 지도")
     st.caption("벽면을 셀로 나누어 셀마다 그 자리의 벽면 방향(입면 깊이 지도를 블록 크기로 평활해 구함)과 근처에서 "
@@ -101,7 +105,7 @@ def render_kinematics(result):
         st.info("표시할 파괴 형태를 하나 이상 고르세요.")
         return
     _map_chart(KV.map_figure(result, kmap, shown), "kin_map")
-    st.dataframe(pd.DataFrame(KV.summary(kmap)), hide_index=True, width="stretch")
+    _table(KV.summary(kmap))
     st.caption(f"암면 셀 {int(kmap.valid.sum())}개 ({kmap.valid.sum() * kmap.cell_m ** 2:.0f} m²), 그중 오버행 "
                f"{int((kmap.overhang & kmap.valid).sum())}개 (벽면 경사 90°로 봄). 원인 절리군의 면적은 그 절리군 때문에 "
                "가능한 셀의 면적입니다.")

@@ -5,7 +5,7 @@ import numpy as np
 import streamlit as st
 
 from groundwater import report
-from groundwater.viz.dashboard.components import (_map_chart, _popup_button, _session_tiles_input,
+from groundwater.viz.dashboard.components import (_map_chart, _note, _popup_button, _session_tiles_input, _table,
     _tiles_scene_button, _view_server)
 from groundwater.viz.dashboard.state import (_chainage_range, _clean_path, _range_state, _reg_crs, _result_key,
     _saved, _session_cache, _w)
@@ -17,9 +17,10 @@ def render_thermal(result):
     from groundwater.facade import thermal as TH
     from groundwater.viz import thermal_view as TV
 
-    st.caption("벽면 평행으로 내보낸 RGB·열화상 정사영상을 같은 벽면 좌표(측점 × 표고)에 겹쳐 봅니다. 열화상 폴더에 온도 "
-               "정사영상(*temperature*.tif, °C — scripts/dji_rjpeg_to_temperature.py → metashape_swap_to_temperature.py)이 "
-               "있으면 온도로, 없으면 팔레트 색(상대값)으로 봅니다.")
+    _note("벽면 평행으로 내보낸 RGB·열화상 정사영상을 같은 벽면 좌표(측점 × 표고)에 겹쳐 봅니다.",
+          "벽면 평행으로 내보낸 RGB·열화상 정사영상을 같은 벽면 좌표(측점 × 표고)에 겹쳐 봅니다. 열화상 폴더에 온도 "
+          "정사영상(`*temperature*.tif`, °C — `scripts/dji_rjpeg_to_temperature.py` → `metashape_swap_to_temperature.py`)이 "
+          "있으면 온도로, 없으면 팔레트 색(상대값)으로 봅니다.")
     site = st.session_state.get("site_folder") or str(Path(result.config["paths"].get("point_cloud") or ".").parent)
     auto = _session_cache("_th_folders", str(site), lambda: TH.find_folders(site))
     c = st.columns(2)
@@ -97,10 +98,11 @@ def _thermal_anomalies(result, th_dir, crs, stamp):
     from groundwater.viz import thermal_view as TV
 
     st.markdown("##### :material/thermostat: 열화상 이상 부분 × 절리")
-    st.caption("온도(°C, 없으면 팔레트 상대 지수)를 맨 암반(식생·낙석방지망·평탄 지면 제외)에서 주변 몇 m의 평균·편차와 비교해 "
-               "뚜렷이 차갑거나 따뜻한 부분을 뽑습니다. 지하수(연중 약 13~16 °C)는 저녁·밤·겨울에는 암반보다 따뜻하게, 햇빛 받는 "
-               "여름 낮에는 차갑게 보입니다 (익산 10/21 열화상은 16:55~17:39 저녁 촬영 → 따뜻한 이상이 유출 후보). 그늘·벌어진 "
-               "틈도 차갑게 보이므로 사진에서 훨씬 어두운 것은 '그늘 의심'으로 표시합니다.")
+    _note("맨 암반의 온도를 주변 몇 m의 평균·편차와 비교해 뚜렷이 차갑거나 따뜻한 부분을 뽑습니다.",
+          "온도(°C, 없으면 팔레트 상대 지수)를 맨 암반(식생·낙석방지망·평탄 지면 제외)에서 주변 몇 m의 평균·편차와 비교해 "
+          "뚜렷이 차갑거나 따뜻한 부분을 뽑습니다. 지하수(연중 약 13~16 °C)는 저녁·밤·겨울에는 암반보다 따뜻하게, 햇빛 받는 "
+          "여름 낮에는 차갑게 보입니다 (익산 10/21 열화상은 16:55~17:39 저녁 촬영 → 따뜻한 이상이 유출 후보). 그늘·벌어진 "
+          "틈도 차갑게 보이므로 사진에서 훨씬 어두운 것은 '그늘 의심'으로 표시합니다.")
     c = st.columns(4)
     win = c[0].select_slider("비교 범위 (m)", [3.0, 5.0, 8.0], **_w("ta_win", 5.0),
                              help="이 크기 안의 평균·편차와 비교 (사진마다 조금씩 바뀐 색 범위를 상쇄)")
@@ -130,7 +132,7 @@ def _thermal_anomalies(result, th_dir, crs, stamp):
                "새 창에서 이상 부분에 마우스를 올리면 표의 값이 나옵니다.")
     if len(an.table):
         tbl = an.table.drop(columns=["u", "v"]).sort_values(["종류", "면적 (m²)"], ascending=[True, False])
-        st.dataframe(tbl, hide_index=True, width="stretch")
+        _table(tbl, {"id": "번호"})
         out = st.session_state.get("output_dir")
         b = st.columns([1, 1, 3])
         b[0].download_button("CSV 내려받기", tbl.to_csv(index=False).encode("utf-8-sig"), "thermal_anomalies.csv",

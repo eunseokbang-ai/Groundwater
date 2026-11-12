@@ -2,7 +2,7 @@
 import streamlit as st
 
 from groundwater import report
-from groundwater.viz.dashboard.components import _figure
+from groundwater.viz.dashboard.components import _choice, _figure, _note
 from groundwater.viz.dashboard.state import _w
 
 
@@ -27,9 +27,10 @@ def _set_candidates(result):
     if not cands:
         st.caption("기준에 조금 못 미친 뚜렷한 밀도 봉우리가 없습니다.")
         return
-    st.caption("극점 밀도가 주변보다 뚜렷하지만 자동 판정 기준(전체 중앙값의 3배 이상, 20° 안에서 가장 진함)을 넘지 못한 "
-               "방향입니다. 스테레오넷에 ◇와 점선으로 표시됩니다. 현장 확인 후 절리군으로 넣으면 다음 분석부터 항상 "
-               "절리군으로 다룹니다 (안정성 검토 포함).")
+    _note("극점 밀도가 뚜렷하지만 자동 판정 기준을 넘지 못한 방향입니다 (스테레오넷의 ◇와 점선).",
+          "극점 밀도가 주변보다 뚜렷하지만 자동 판정 기준(전체 중앙값의 3배 이상, 20° 안에서 가장 진함)을 넘지 못한 "
+          "방향입니다. 스테레오넷에 ◇와 점선으로 표시됩니다. 현장 확인 후 절리군으로 넣으면 다음 분석부터 항상 "
+          "절리군으로 다룹니다 (안정성 검토 포함).")
     pinned_txt = st.session_state.get("adv_fixed_sets") or ""
     for k, c in enumerate(cands):
         cols = st.columns([1.1, 1.1, 1.0, 3.2, 1.6], vertical_alignment="center")
@@ -48,15 +49,15 @@ def _set_candidates(result):
 def render_stereonet(result):
     """Poles, or a smoothly contoured pole-density map (with or without the poles), set planes and the face."""
     modes = ["극점", "밀도 지도", "밀도 지도 + 극점"]
-    c = st.columns([1.7, 1.4, 1.1, 1.1, 0.9], vertical_alignment="bottom")
-    mode = c[0].radio("표시", modes, horizontal=True, **_w("st_mode", modes[0]),
-                      help="밀도 지도: 극점이 모인 정도를 부드러운 등치선으로 (Kamb 지수 평활). 절리군의 중심과 퍼짐, "
-                           "군과 군 사이가 이어지는지를 한눈에 봅니다.")
+    c = st.columns([2.0, 1.2, 1.0, 1.0, 1.0], vertical_alignment="bottom")
+    mode = _choice("표시", modes, c[0], **_w("st_mode", modes[0]),
+                   help="밀도 지도: 극점이 모인 정도를 부드러운 등치선으로 (Kamb 지수 평활). 절리군의 중심과 퍼짐, "
+                        "군과 군 사이가 이어지는지를 한눈에 봅니다.")
     off = mode == modes[0]
     methods = {"Kamb (지수 평활)": "exponential_kamb", "Schmidt (1% 면적)": "schmidt"}
-    method = methods[c[1].radio("밀도 계산", list(methods), horizontal=True, disabled=off,
-                                **_w("st_method", "Kamb (지수 평활)"),
-                                help="Kamb: 균등 분포 대비 몇 σ 많은지 (평활 정도 조절). Schmidt: 1 % 면적 원 안의 극점 비율.")]
+    method = methods[_choice("밀도 계산", list(methods), c[1], disabled=off, format_func=lambda m: m.split(" (")[0],
+                             **_w("st_method", "Kamb (지수 평활)"),
+                             help="Kamb: 균등 분포 대비 몇 σ 많은지 (평활 정도 조절). Schmidt: 1 % 면적 원 안의 극점 비율.")]
     sigma = c[2].slider("평활 σ", 1.0, 5.0, step=0.5, disabled=off or method == "schmidt", **_w("st_sigma", 3.0),
                         help="클수록 더 부드럽게 (세는 원이 커짐). 3이 일반적입니다.")
     cmap = c[3].selectbox("색", list(report.DENSITY_CMAPS), disabled=off, **_w("st_cmap", "흰색→갈색"))

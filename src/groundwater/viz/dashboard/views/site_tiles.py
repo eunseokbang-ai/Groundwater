@@ -1,7 +1,7 @@
 """View '현장 전체 3D': the tiled model of the whole site with every section's result."""
 import streamlit as st
 
-from groundwater.viz.dashboard.components import _open_tiles_viewer, _variant_picker
+from groundwater.viz.dashboard.components import _note, _open_tiles_viewer, _variant_picker
 from groundwater.viz.dashboard.state import _saved, _site_dir, _w
 
 
@@ -16,10 +16,11 @@ def render_site_tiles(result=None):
         return
     st.subheader(":material/public: 현장 전체 실사 3D — 타일 모델 위에 모든 구간의 결과")
     with st.container():
-        st.caption("현장 전체 타일 모델(Metashape .3tz, 사진 텍스처)을 배경으로 구간마다의 절리면을 올립니다. 같은 방향의 "
-                   "절리군은 구간이 달라도 같은 색(방향 ±20°로 묶음)이고, 이름에 그 절리군이 나오는 구간을 적습니다. 트레이스와 "
-                   "유출 가능성 칸(1 m)도 함께 올릴 수 있습니다. 타일 모델은 분석에는 쓰지 않고 보기용입니다 "
-                   "(인터넷 연결 필요: 3D 엔진 CesiumJS).")
+        _note("현장 전체 타일 모델(Metashape .3tz, 사진 텍스처)을 배경으로 구간마다의 절리면을 올려 새 탭에서 엽니다.",
+              "현장 전체 타일 모델(Metashape .3tz, 사진 텍스처)을 배경으로 구간마다의 절리면을 올립니다. 같은 방향의 "
+              "절리군은 구간이 달라도 같은 색(방향 ±20°로 묶음)이고, 이름에 그 절리군이 나오는 구간을 적습니다. 트레이스와 "
+              "유출 가능성 칸(1 m)도 함께 올릴 수 있습니다. 타일 모델은 분석에는 쓰지 않고 보기용입니다 "
+              "(인터넷 연결 필요: 3D 엔진 CesiumJS).")
         if not str(st.session_state.get("site3d_tiles") or _saved("site3d_tiles", "")).strip():
             f = tiles3d.find_tileset(site)                    # the largest .3tz of the site folder
             st.session_state["site3d_tiles"] = str(f) if f else ""

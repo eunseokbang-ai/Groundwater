@@ -4,7 +4,7 @@ from pathlib import Path
 import streamlit as st
 
 from groundwater.pipeline import RESULT_PICKLE, load_config
-from groundwater.viz.dashboard.components import _open_facade_tool
+from groundwater.viz.dashboard.components import _choice, _open_facade_tool
 from groundwater.viz.dashboard.run import _last_timings, _run_dialog, _run_notes, _run_times, _take_run
 from groundwater.viz.dashboard.sidebar import sidebar_folder
 from groundwater.viz.dashboard.state import (_RESULT_STATE, _load_results_cached, _reference_folder, _site_dir,
@@ -76,9 +76,9 @@ def _main():
 
     with st.sidebar:
         st.subheader(":material/folder_open: 1 · 현장 자료")
-        mode = st.radio("입력 방식", ["현장 폴더", "설정 파일 (YAML)"], horizontal=True,
-                        help="현장 폴더: 폴더 안의 점군·실측 자료를 자동으로 찾습니다. "
-                             "설정 파일: 이전 분석의 분석결과/analysis_config.yaml 등을 불러와 세부 값을 조정할 때.")
+        mode = _choice("입력 방식", ["현장 폴더", "설정 파일 (YAML)"], format_func=lambda m: m.split(" (")[0],
+                       help="현장 폴더: 폴더 안의 점군·실측 자료를 자동으로 찾습니다. "
+                            "설정 파일: 이전 분석의 분석결과/analysis_config.yaml 등을 불러와 세부 값을 조정할 때.")
         st.session_state["_input_mode"] = mode
         if mode == "현장 폴더":
             cfg = sidebar_folder()

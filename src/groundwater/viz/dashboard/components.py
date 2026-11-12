@@ -1,8 +1,10 @@
-"""Building blocks shared by the views: figures as a still image with a popup window, the 3D view, the saved
-figure files, the planar-data and 3D-tiles path fields, and the buttons that open the external tools."""
+"""Building blocks shared by the views: tables with labelled columns, the choice control, the explanation behind
+a button, figures as a still image with a popup window, the 3D view, the saved figure files, the planar-data and
+3D-tiles path fields, and the buttons that open the external tools."""
 import sys
 from pathlib import Path
 
+import pandas as pd
 import streamlit as st
 
 from groundwater import report
@@ -16,6 +18,117 @@ POPUP_TITLES = {"trace_map": "입면 트레이스 지도", "seep_map": "유출 �
                 "section": "그라우팅 단면", "sm_plan": "수평 단면 (x-y)", "sm_cross": "횡단면 (y-z)",
                 "sm_par": "벽면 평행 단면 (x-z)", "v3d_main": "점군 3D", "sm_cloud": "점군 3D — 절리군 색",
                 "sm_interior": "암반 내부 절리면 (3D)", "lidar_section": "라이다 단면", "sj_plan": "지중 절리 수평 단면", "sj_ortho": "정사영상 위 절리", "ex_plan": "굴착면 구분 — 평면", "sj_section": "지중 절리 수직 단면", "g3d": "그라우팅 3차원 가상 시공"}
+
+
+# The tables' columns: name in the data -> label with its unit, or (label, number format), or (label, number format,
+# help). One list for every view, so a quantity reads the same wherever it appears. Only the screen uses it: the
+# files a view writes (CSV) keep the names of the data.
+_XYZ = "지도 좌표 (현장 좌표계)"
+COLUMNS = {
+    # joint sets and faces
+    "set_id": "절리군", "set": "절리군", "name": "절리군", "patch_id": "절리면",
+    "mean_dip": ("평균 경사 (°)", "%.1f"), "mean_dip_direction": ("평균 경사방향 (°)", "%.1f"),
+    "fisher_k": ("Fisher K", "%.1f", "방향 집중도: 클수록 그 절리군의 면 방향이 한데 모여 있습니다"),
+    "n_points": "점 수", "n_patches": "절리면 수",
+    "spacing_mean_m": ("평균 간격 (m)", "%.2f"), "spacing_m": ("간격 (m)", "%.2f"),
+    "dip": ("경사 (°)", "%.1f"), "dip_direction": ("경사방향 (°)", "%.1f"),
+    "chainage_m": ("측점 (m)", "%.1f"), "elevation_m": ("표고 (m)", "%.1f"),
+    "trace_confirmed_2d": ("트레이스 확인", None, "True = 입면 트레이스로 확인된 면, False = 맞는 트레이스 없음, "
+                                           "빈칸 = 벽면과 평행해 확인할 수 없음"),
+    "roughness_rms_m": ("거칠기 (m)", "%.4f", "면 점들의 평면 오차(RMS)"),
+    "persistence_length_m": ("연장성 (m)", "%.2f"), "persistence_m": ("연장성 (m)", "%.2f"),
+    "area_m2": ("면적 (m²)", "%.2f"),
+    "x": ("X (m)", "%.2f", _XYZ), "y": ("Y (m)", "%.2f", _XYZ), "z": ("Z (m)", "%.2f", _XYZ),
+    # the same quantities under the Korean names some views give them
+    "경사": ("경사 (°)", "%.1f"), "경사방향": ("경사방향 (°)", "%.1f"), "측점": ("측점 (m)", "%.1f"),
+    "표고": ("표고 (m)", "%.1f"), "벽면 법선 방위": ("벽면 법선 방위 (°)", "%.0f"),
+    # trace families
+    "family": "방향군", "apparent_angle_deg": ("입면 각도 (°)", "%.0f", "입면 영상에 나타나는 선의 각도"),
+    "n_traces": "트레이스 수", "total_length_m": ("총 길이 (m)", "%.1f"), "mean_length_m": ("평균 길이 (m)", "%.2f"),
+    "linked_3d_set": ("맞는 3차원 절리군", None,
+                      "입면에 나타나는 각도가 맞는 3차원 절리군. '1 또는 2'처럼 둘 이상이면 그 절리군들이 이 벽면에서 같은 "
+                      "각도의 선을 만들어 각도만으로는 가를 수 없다는 뜻입니다 (방향군 색은 첫 번째 절리군). 비어 있으면 "
+                      "3차원 면으로 잡히지 않은 절리(주로 벽면을 가로지르는 절리)입니다."),
+    "trace_only": ("트레이스로만 잡힘", None, "맞는 3차원 절리군이 없는 방향군"),
+    "est_dip": ("추정 경사 (°)", None, "트레이스들의 3차원 방향에서 추정한 값. 벽면이 평평하면 정할 수 없습니다."),
+    "est_dip_direction": ("추정 경사방향 (°)", None, "트레이스들의 3차원 방향에서 추정한 값. 벽면이 평평하면 정할 수 없습니다."),
+    "orientation_quality": "방향 추정 품질", "apparent_spacing_m": ("입면 간격 (m)", "%.2f"),
+    # seepage zones
+    "zone": "구역", "score": ("점수", "%.2f"), "p21": ("절리 밀도 P21", "%.2f"),
+    "openness_cm": ("열린 정도 (cm)", "%.1f", "입면 깊이에서 홈의 평균 깊이"),
+    "network_m": ("절리망 길이 (m)", "%.0f", "서로 닿는 트레이스로 이어진 절리망의 길이"),
+    "plants_along_joints": ("절리 옆 식생", "%.2f", "트레이스 양옆 10 cm 띠 안의 초록 화소 비율 (0~1)"),
+    "trace_families": "트레이스 방향군", "sets_on_face": "암면의 절리군",
+    # kinematics
+    "u0": ("측점 시작 (m)", "%.1f"), "u1": ("측점 끝 (m)", "%.1f"), "face": "벽면 (경사/경사방향)", "mode": "파괴 형태",
+    "joints": "절리군", "detail": ("절리 방향", None, "평면·전도파괴: 그 절리군의 경사/경사방향. 쐐기파괴: 두 절리군 교선의 "
+                                                 "경사→방향"),
+    "face_dip": ("벽면 경사 (°)", "%.1f"), "face_dip_direction": ("벽면 경사방향 (°)", "%.1f"),
+    # field validation
+    "field_id": "실측 번호", "field_dip": ("실측 경사 (°)", "%.0f"), "field_dip_direction": ("실측 경사방향 (°)", "%.0f"),
+    "matched_set_id": "맞는 절리군", "angular_error_deg": ("각도 오차 (°)", "%.1f"),
+    # grouting
+    "axis": ("주축", None, "1 = 물이 가장 잘 흐르는 방향"), "relative_k": ("상대 투수계수", "%.2f"),
+    "trend": ("방위 (°)", "%.0f"), "plunge": ("경사 (°, 아래로)", "%.0f"),
+    "flow_share": st.column_config.ProgressColumn("투수 기여도", min_value=0, max_value=1, format="percent"),
+    "angle_to_curtain_deg": ("커튼과의 각 (°)", "%.0f"),
+    "apparent_dip_on_curtain_deg": ("커튼 면 위 경사 (°)", "%.0f"), "remark": "비고",
+    "hole": "공", "collar_z": ("공 입구 표고 (m)", "%.1f"), "length_m": ("공 길이 (m)", "%.2f"),
+    "n_joints": ("예상 관통 절리 수", None, "절리군 간격으로 계산한 값 (실측 절리가 아님)"),
+    "target_joint": "대상 절리", "seepage_score": ("유출 가능성 점수", "%.2f"),
+    "joint_at_m": ("절리까지 (m)", "%.2f", "공 입구에서 대상 절리를 만나는 곳까지의 길이"),
+    "new_high_joints": ("새로 관통하는 '상' 절리", None, "그 공이 처음으로 관통하는, 유출 가능성 '상' 칸의 절리 수"),
+    "sets_crossed": "지나는 절리군",
+    "breaks_out_at_m": ("암반 이탈 (m)", "%.1f", "공이 계획 길이 전에 암반 밖으로 나가는 곳 (공 입구에서의 길이)"),
+    "crosses_mapped": "지나는 관측 절리", "crosses_statistical": "지나는 통계 절리",
+    "crosses_high_seepage": "지나는 유출 '상' 절리",
+}
+
+
+def _table(data, columns: dict | None = None, **kw):
+    """A table with the dashboard's column labels and units (COLUMNS; `columns` adds to or replaces them for this
+    table, an entry may also be a ready st.column_config column), without the row numbers, across the page."""
+    df = pd.DataFrame(data)
+    config = {}
+    for name in df.columns:
+        spec = {**COLUMNS, **(columns or {})}.get(name)
+        if spec is None:
+            continue
+        if not isinstance(spec, (str, tuple)):
+            config[name] = spec
+            continue
+        label, fmt, tip = (spec, None, None) if isinstance(spec, str) else (tuple(spec) + (None, None))[:3]
+        kind = df[name].dtype
+        if fmt and pd.api.types.is_numeric_dtype(kind) and not pd.api.types.is_bool_dtype(kind):
+            config[name] = st.column_config.NumberColumn(label, format=fmt, help=tip)
+        else:
+            config[name] = st.column_config.Column(label, help=tip)
+    kw.setdefault("hide_index", True)
+    kw.setdefault("width", "stretch")
+    return st.dataframe(df, column_config=config, **kw)
+
+
+def _choice(label, options, col=None, **kw):
+    """One of a few options as a segmented control: the dashboard's control for a short choice (a radio only where
+    the options are a long list). One option is always selected, and a remembered value that is no longer among
+    the options falls back to `default` (the first option)."""
+    options = list(options)
+    default = kw.pop("default", options[0])
+    key = kw.get("key")
+    if key is None:
+        kw["default"] = default
+    elif st.session_state.get(key) not in options:
+        st.session_state[key] = default
+    return (col or st).segmented_control(label, options, required=True, **kw) or default
+
+
+def _note(summary: str, detail: str):
+    """A view's explanation: one line on the page, the rest behind a small '자세히' button, so a view opens on its
+    controls and figures and not on a block of text."""
+    row = st.container(horizontal=True, vertical_alignment="center")
+    row.caption(summary, width="content")
+    with row.popover("자세히", icon=":material/info:", type="tertiary"):
+        st.markdown(detail)
 
 
 @st.cache_resource(show_spinner=False)

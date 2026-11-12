@@ -6,7 +6,7 @@ import pandas as pd
 import streamlit as st
 
 from groundwater import site_folder
-from groundwater.viz.dashboard.components import _figure_window
+from groundwater.viz.dashboard.components import _choice, _figure_window, _note
 from groundwater.viz.dashboard.state import _session_cache, _site_dir, _w
 
 
@@ -58,9 +58,11 @@ def render_lidar_section(result):
     if not lidars:
         st.info("이 현장 폴더에 라이다(.las) 파일이 없습니다.")
         return
-    st.caption("평면도에 선을 그리면 그 선을 따라 수직으로 자른 라이다 단면을 보여 줍니다. 얇은 단면 안의 점을 반사 종류(단일 · 첫 · "
-               "중간 · 마지막)로 칠하고, 프로그램이 망·식생 뒤에서 암반으로 남기는 뒤쪽 층(검정, 벽면 안 완경사는 보라)과 벽면 범위 밖이라 빼는 층(주황: 원지반·나무 줄기·바닥), 실제 "
-               "절리 분석에서 절리군에 들어간 점(절리군 색 ◆)을 겹칩니다. 라이다 품질과 암반 판정을 눈으로 확인하는 화면입니다.")
+    _note("평면도에 그은 선을 따라 수직으로 자른 라이다 단면입니다 — 라이다 품질과 암반 판정을 눈으로 확인하는 화면.",
+          "평면도에 선을 그리면 그 선을 따라 수직으로 자른 라이다 단면을 보여 줍니다. 얇은 단면 안의 점을 반사 종류(단일 · 첫 · "
+          "중간 · 마지막)로 칠하고, 프로그램이 망·식생 뒤에서 암반으로 남기는 뒤쪽 층(검정, 벽면 안 완경사는 보라)과 벽면 "
+          "범위 밖이라 빼는 층(주황: 원지반·나무 줄기·바닥), 실제 절리 분석에서 절리군에 들어간 점(절리군 색 ◆)을 겹칩니다. "
+          "라이다 품질과 암반 판정을 눈으로 확인하는 화면입니다.")
     names = [str(f.relative_to(site)) for f in lidars]
     from groundwater.facade.region import SECTION_FILE, load_section
 
@@ -88,7 +90,7 @@ def render_lidar_section(result):
     show_an = c[3].toggle("분석에 쓴 점 겹치기", **_w("ls_an", True), help="이 위치를 담당하는 구간의 분석 결과 점 (절리군 색)")
 
     modes = ["평면도에서 선 그리기", "구간·측점 (벽에 직각)", "좌표 입력"]
-    mode = st.radio("단면 정하기", modes, horizontal=True, **_w("ls_mode", modes[0]))
+    mode = _choice("단면 정하기", modes, **_w("ls_mode", modes[0]))
     line = st.session_state.get("ls_line")
     secs = site_folder.sections(site)
     if mode == modes[1]:
@@ -208,10 +210,12 @@ def render_lidar_section(result):
                          help=f"그중 벽면 안 완경사(소단·사면) {stt.get('벽면 안 완경사 (암반)', 0):,}")
             m_[3].metric("벽면 밖·지면 위로 뺀 점", f"{stt['벽면 범위 밖 제외'] + stt['지면 위 제외']:,}",
                          help=f"벽면 범위 밖 {stt['벽면 범위 밖 제외']:,} · 지면 위(수목) {stt['지면 위 제외']:,}")
-        st.caption(f"읽은 위치 블록 {slab['chunks_read']}개 · 판정은 이 위치를 담당하는 "
-                   + (f"구간 {owner}의 기준선 기준" if owner else "현장 폴더 기준선 기준")
-                   + ". 판정(뒤쪽 층)은 프로그램이 망·식생 셀에서 쓰는 규칙입니다: 5 cm 셀마다 가장 뒤쪽 점에서 6 cm 안, "
-                     "그중 벽면 범위 안의 점(벽면 열마다 가장 아래부터 가장 위의 급경사 면(1 m 범위 경사 60° 이상)까지, 높이 4 m · 깊이 10 m 넘게 떨어지지 않고 이어진 범위; 그 사이 완경사 = 소단·사면도 암반, 그 위의 원지반·나무 줄기와 아래 바닥은 제외; 경사는 깊이 0.5 m 안의 점으로만 구함)이고, 주변 5 m 안 가장 높은 지면(DTM)보다 2 m 넘게 위가 아닌 점.")
+        _note(f"읽은 위치 블록 {slab['chunks_read']}개 · 판정은 이 위치를 담당하는 "
+              + (f"구간 {owner}의 기준선 기준." if owner else "현장 폴더 기준선 기준."),
+              "판정(뒤쪽 층)은 프로그램이 망·식생 셀에서 쓰는 규칙입니다: 5 cm 셀마다 가장 뒤쪽 점에서 6 cm 안, 그중 벽면 범위 "
+              "안의 점(벽면 열마다 가장 아래부터 가장 위의 급경사 면(1 m 범위 경사 60° 이상)까지, 높이 4 m · 깊이 10 m 넘게 "
+              "떨어지지 않고 이어진 범위; 그 사이 완경사 = 소단·사면도 암반, 그 위의 원지반·나무 줄기와 아래 바닥은 제외; "
+              "경사는 깊이 0.5 m 안의 점으로만 구함)이고, 주변 5 m 안 가장 높은 지면(DTM)보다 2 m 넘게 위가 아닌 점.")
         out = (res_dir if res_dir.exists() else site) / "단면확인"
         name = f"단면_{a[0]:.0f}_{a[1]:.0f}_{b[0]:.0f}_{b[1]:.0f}"
         bc = st.columns([1, 1, 2])

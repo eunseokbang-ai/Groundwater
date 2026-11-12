@@ -6,8 +6,8 @@ import pandas as pd
 import streamlit as st
 
 from groundwater import hydro, report
-from groundwater.viz.dashboard.components import (_map_chart, _open_tiles_viewer, _planar_input, _tiles_path_input,
-    _view3d)
+from groundwater.viz.dashboard.components import (_choice, _map_chart, _note, _open_tiles_viewer, _planar_input,
+    _table, _tiles_path_input, _view3d)
 from groundwater.viz.dashboard.state import (_chainage_range, _clean_path, _flow_sets, _fragment, _reference_folder,
     _reg_crs, _remember, _result_key, _saved, _session_cache, _w, _w_clamped)
 
@@ -20,9 +20,10 @@ def _site_mesh_cached(path: str, mtime: float, result_key, hide_veg: bool, _resu
 
 
 def render_grouting(result):
-    st.caption("드론 절리망으로 만든 **그라우팅 설계 초기 입력값**입니다. 개구폭을 모르는 동안은 모든 절리군에 같은 개구폭을 "
-               "가정하므로 투수 '방향'과 '비율'만 의미가 있습니다. 간격·연장성·개구폭은 아래 표에서 고칠 수 있고, "
-               "시추·루전 시험 결과가 나오면 그 값으로 바꾸세요.")
+    _note("드론 절리망으로 만든 **그라우팅 설계 초기 입력값**입니다 — 투수 '방향'과 '비율'만 의미가 있습니다.",
+          "드론 절리망으로 만든 **그라우팅 설계 초기 입력값**입니다. 개구폭을 모르는 동안은 모든 절리군에 같은 개구폭을 "
+          "가정하므로 투수 '방향'과 '비율'만 의미가 있습니다. 간격·연장성·개구폭은 아래 표에서 고칠 수 있고, "
+          "시추·루전 시험 결과가 나오면 그 값으로 바꾸세요.")
     base = _flow_sets(result)
     if not len(base):
         st.info("절리군이 없습니다.")
@@ -38,8 +39,8 @@ def render_grouting(result):
                        "spacing_m": st.column_config.NumberColumn("간격 (m)", min_value=0.05, step=0.1, format="%.2f"),
                        "persistence_m": st.column_config.NumberColumn("연장성 (m)", min_value=0.1, step=0.1, format="%.2f"),
                        "aperture_rel": st.column_config.NumberColumn("상대 개구폭", min_value=0.0, step=0.1, format="%.2f"),
-                       "dip": st.column_config.NumberColumn("경사", format="%.0f"),
-                       "dip_direction": st.column_config.NumberColumn("경사방향", format="%.0f")})
+                       "dip": st.column_config.NumberColumn("경사 (°)", format="%.0f"),
+                       "dip_direction": st.column_config.NumberColumn("경사방향 (°)", format="%.0f")})
     sets = edited[edited["use"]].drop(columns=["use"])
     if not len(sets):
         st.warning("절리군을 하나 이상 포함하세요.")
@@ -47,7 +48,7 @@ def render_grouting(result):
     seg = result.wall_frame.vertices
     d = seg[-1] - seg[0]
     wall_az = float(np.degrees(np.arctan2(d[0], d[1])) % 360)
-    mode = st.radio("차수 커튼", ["없음", f"벽면 기준선과 평행 (가상, 방위 {wall_az:.0f}°)", "방위각 직접 입력"], horizontal=True)
+    mode = _choice("차수 커튼", ["없음", f"벽면 기준선과 평행 (가상, 방위 {wall_az:.0f}°)", "방위각 직접 입력"])
     az = None
     if mode.startswith("벽면"):
         az = wall_az
@@ -72,22 +73,25 @@ def render_grouting(result):
         st.image(report.fig_hole_orientation(g))
     with right:
         st.markdown("**투수 주축** (1 = 물이 가장 잘 흐르는 방향)")
-        st.dataframe(principal, hide_index=True, width="stretch")
+        _table(principal)
         st.markdown("**절리군별 투수 기여도**")
-        st.dataframe(sets[["name", "flow_share"]], hide_index=True, width="stretch")
+        _table(sets[["name", "flow_share"]])
         st.markdown("**최적 방향 공 / 연직공이 만나는 절리 (10 m당)**")
         a = pd.DataFrame(hydro.per_set_frequency(sets, best["trend"], best["plunge"]))
         b = pd.DataFrame(hydro.per_set_frequency(sets, 0, 90))
-        st.dataframe(a.merge(b, on="set", suffixes=("_최적", "_연직")), hide_index=True, width="stretch")
+        _table(a.merge(b, on="set", suffixes=("_최적", "_연직")),
+               {f"{c}_{w}": (f"{label} — {w}", fmt) for w in ("최적", "연직") for c, label, fmt in (
+                   ("angle_to_hole_deg", "공과의 각 (°)", "%.0f"), ("joints_per_10m", "절리 수 (개/10 m)", "%.1f"))})
     if az is not None:
         st.subheader("차수 커튼 검토")
         cc = hydro.curtain_check(sets, az)
-        st.dataframe(cc, hide_index=True, width="stretch")
+        cut_help = ("연직공을 그 간격으로 한 줄 뚫었을 때 그 절리군의 절리 하나가 공에 걸릴 확률 "
+                    "(커튼 면 위 트레이스 중 공을 가로지르는 길이 / 공 간격)")
+        _table(cc, {c: (f"걸릴 확률 — 공 간격 {c[7:-1]} m", "%.2f", cut_help) for c in cc.columns if c.startswith("cut_at_")})
         conductive = sets[sets["flow_share"] >= 0.1]
         ext = float(np.percentile(conductive["persistence_m"], 90)) if len(conductive) else None
-        st.caption("cut_at_Sm = 연직공을 간격 S로 한 줄 뚫었을 때 그 절리군의 절리 하나가 공에 걸릴 확률 "
-                   "(커튼 면 위 트레이스 중 공을 가로지르는 길이 / S). "
-                   + (f"커튼 끝 연장 권장: 전도성 절리군 연장성 p90 = {ext:.1f} m 이상 (드론 연장성은 하한값)." if ext else ""))
+        if ext:
+            st.caption(f"커튼 끝 연장 권장: 전도성 절리군 연장성 p90 = {ext:.1f} m 이상 (드론 연장성은 하한값).")
     render_grouting_3d(result, sets, best, in_plane, az)
     if any(sets["note"].str.contains("벽면과 평행")):
         st.warning("벽면과 평행한 절리군의 간격은 벽면이 계단식으로 물러나는 간격일 수 있어 투수 기여도를 과대평가할 수 있습니다. "
@@ -98,11 +102,11 @@ def render_grouting(result):
 def render_grouting_3d(result, sets, best, in_plane, curtain_az):
     st.subheader("3차원 가상 시공")
     layouts = ["절리망 기반 표적 천공 (권장)", "얕은 균열 주입 (표면 가까운 균열 보수)", "균등 배치 (차수 커튼·격자)"]
-    layout = st.radio("배치 방식", layouts, horizontal=True, **_w("g3d_layout2", layouts[0]),
-                      help="절리망 기반: 표면 절리를 암반 속으로 연장한 절리면과 그 교차를 보고, 유출 가능성 높은 곳에서 "
-                           "가장 많은 절리를 관통하도록 공 위치·방향·경사를 정합니다. "
-                           "얕은 균열 주입: 트레이스 바로 뒤 1 m 안팎의 절리를 맞히는 짧은 공 (표면 균열 보수용). "
-                           "균등: 위 통계로 정한 방향의 공을 일정 간격으로 뚫는 일반 차수 커튼.")
+    layout = _choice("배치 방식", layouts, **_w("g3d_layout2", layouts[0]),
+                     help="절리망 기반: 표면 절리를 암반 속으로 연장한 절리면과 그 교차를 보고, 유출 가능성 높은 곳에서 "
+                          "가장 많은 절리를 관통하도록 공 위치·방향·경사를 정합니다. "
+                          "얕은 균열 주입: 트레이스 바로 뒤 1 m 안팎의 절리를 맞히는 짧은 공 (표면 균열 보수용). "
+                          "균등: 위 통계로 정한 방향의 공을 일정 간격으로 뚫는 일반 차수 커튼.")
     if layout.startswith("절리망"):
         targeted = _network_controls(result)
     elif layout.startswith("얕은"):
@@ -120,12 +124,13 @@ def render_grouting_3d(result, sets, best, in_plane, curtain_az):
 
 
 def _network_controls(result):
-    st.caption("표면에서 본 절리를 **암반 속으로 연장한 절리면**(아래 '벽면 안쪽 절리면'의 연장 깊이 설정)을 기준으로 공을 설계합니다. "
-               "유출 가능성 높은 칸마다 공 입구 후보를 두고, 방향(벽면 직각에서 ±60°)과 경사(10~60°)를 바꿔 가며 "
-               "암반 안에 머무는 공 중 **아직 관통되지 않은 절리를 가장 많이 지나는 공**을 하나씩 고릅니다. "
-               "여러 절리군을 함께 지나는 공(절리 교차 = 물길)에 가산점을 주고, 연장 범위 너머는 절리군 간격으로 기대값을 더합니다.")
+    _note("표면 절리를 **암반 속으로 연장한 절리면**을 보고, 아직 관통되지 않은 절리를 가장 많이 지나는 공을 하나씩 고릅니다.",
+          "표면에서 본 절리를 **암반 속으로 연장한 절리면**(아래 '벽면 안쪽 절리면'의 연장 깊이 설정)을 기준으로 공을 설계합니다. "
+          "유출 가능성 높은 칸마다 공 입구 후보를 두고, 방향(벽면 직각에서 ±60°)과 경사(10~60°)를 바꿔 가며 "
+          "암반 안에 머무는 공 중 **아직 관통되지 않은 절리를 가장 많이 지나는 공**을 하나씩 고릅니다. "
+          "여러 절리군을 함께 지나는 공(절리 교차 = 물길)에 가산점을 주고, 연장 범위 너머는 절리군 간격으로 기대값을 더합니다.")
     c = st.columns(4)
-    cls = c[0].radio("공 입구 후보 칸", ["'상'만", "'상'+'중'"], **_w("nw_cls", "'상'만"))
+    cls = _choice("공 입구 후보 칸", ["'상'만", "'상'+'중'"], c[0], **_w("nw_cls", "'상'만"))
     c[0].button("기본값으로", on_click=_reset_network, icon=":material/restart_alt:", key="nw_reset",
                 help="공 길이 8 m, 최대 30개, 입구 간격 2 m, 통계 가중 0.2, 절리 연장 = 트레이스 길이 ×1 (최대 5 m)")
     length = c[1].slider("공 길이 (m)", 3.0, 20.0, step=1.0, **_w("nw_length", 8.0))
@@ -143,11 +148,12 @@ def _network_controls(result):
 
 
 def _targeted_controls(result):
-    st.caption("유출 가능성 지도에서 점수가 높은 칸을 지나는 **매핑된 절리(트레이스)**에만 공을 둡니다. 공마다 트레이스 옆 벽면에서 "
-               "비스듬히 뚫어 벽면 뒤 일정 깊이에서 그 절리면을 맞히고 (절리군 방향 사용), 공이 만나는 위치를 원판으로 그립니다. "
-               "평탄한 절리는 위에서 아래로, 급경사 절리는 좌우 번갈아 뚫으며 모든 공은 아래로 기울입니다 (주입재가 흘러나오지 않게).")
+    _note("유출 가능성 점수가 높은 칸을 지나는 **매핑된 절리(트레이스)**에만 짧은 공을 둡니다.",
+          "유출 가능성 지도에서 점수가 높은 칸을 지나는 **매핑된 절리(트레이스)**에만 공을 둡니다. 공마다 트레이스 옆 벽면에서 "
+          "비스듬히 뚫어 벽면 뒤 일정 깊이에서 그 절리면을 맞히고 (절리군 방향 사용), 공이 만나는 위치를 원판으로 그립니다. "
+          "평탄한 절리는 위에서 아래로, 급경사 절리는 좌우 번갈아 뚫으며 모든 공은 아래로 기울입니다 (주입재가 흘러나오지 않게).")
     c = st.columns(4)
-    cls = c[0].radio("대상 칸", ["'상'만", "'상'+'중'"], **_w("tg_cls", "'상'만"))
+    cls = _choice("대상 칸", ["'상'만", "'상'+'중'"], c[0], **_w("tg_cls", "'상'만"))
     min_len = c[0].slider("최소 트레이스 길이 (m)", 0.5, 5.0, step=0.5, **_w("tg_minlen", 1.0))
     spacing = c[1].slider("트레이스 따라 공 간격 (m)", 0.5, 3.0, step=0.25, **_w("tg_spacing", 1.0),
                           help="균열 주입의 관례: 절리를 맞히는 깊이와 비슷하게")
@@ -178,11 +184,12 @@ def _seepage_map(result):
 def _joint_controls(result):
     """Options for the joint planes inside the rock and the cut-away."""
     with st.expander("벽면 안쪽 절리면 · 표면 잘라내기", expanded=True):
-        st.caption("표면 분석 결과를 벽면 안쪽으로 이어 그립니다. **관측 절리 연장**은 실제로 매핑된 트레이스·절리면을 그 절리군 "
-                   "방향으로 암반 속까지 연장한 것(위치는 실제, 크기만 가정), **통계 절리망**은 절리군의 간격·연장성으로 만든 "
-                   "가상 절리(위치는 임의)입니다. 색은 절리군, 진하기는 유출 가능성(또는 크기)입니다. 공이 지나는 절리는 흰 점, "
-                   "공이 닿지 않는 유출 '상' 절리는 빨간 테두리로 표시합니다.")
-        c = st.columns(4)
+        _note("표면 분석 결과를 벽면 안쪽으로 이어 그립니다: **관측 절리 연장**(위치는 실제)과 **통계 절리망**(위치는 임의).",
+              "표면 분석 결과를 벽면 안쪽으로 이어 그립니다. **관측 절리 연장**은 실제로 매핑된 트레이스·절리면을 그 절리군 "
+              "방향으로 암반 속까지 연장한 것(위치는 실제, 크기만 가정), **통계 절리망**은 절리군의 간격·연장성으로 만든 "
+              "가상 절리(위치는 임의)입니다. 색은 절리군, 진하기는 유출 가능성(또는 크기)입니다. 공이 지나는 절리는 흰 점, "
+              "공이 닿지 않는 유출 '상' 절리는 빨간 테두리로 표시합니다.")
+        c = st.columns([1, 1, 1, 1.2])
         show = c[0].checkbox("관측 절리 연장", **_w("g3d_joints", True))
         dfn = c[0].checkbox("통계 절리망 (위치 임의)", **_w("g3d_dfn", False))
         pred = c[0].checkbox("공 따라 예상 관통 원판", **_w("g3d_pred", False),
@@ -193,7 +200,7 @@ def _joint_controls(result):
         dfn_depth = c[2].slider("통계 절리망 두께 (벽면 뒤, m)", 1.0, 20.0, step=0.5, disabled=not dfn,
                                 **_w("g3d_dfn_depth", 10.0), help="상부 커튼과 비교하려면 커튼 거리보다 두껍게")
         jop = c[2].slider("절리면 불투명도", 0.1, 1.0, step=0.05, **_w("g3d_jopacity", 0.5))
-        shade = c[3].radio("진하기 기준", ["유출 가능성", "크기", "같게"], **_w("g3d_jshade", "유출 가능성"))
+        shade = _choice("진하기 기준", ["유출 가능성", "크기", "같게"], c[3], **_w("g3d_jshade", "유출 가능성"))
         lo, hi = _chainage_range(result)
         lo, hi = float(np.floor(lo)), float(np.ceil(hi))
         _remember("g3d_cut_range", site=True)
@@ -320,7 +327,7 @@ def _seepage_overlay_controls() -> dict:
                      help="'유출 가능성' 화면의 지도(같은 가중치·격자)를 암벽 표면에 반투명하게 덮고, 점수가 높은 구역 "
                           "10곳의 번호(#)를 붙입니다. 공이 유출 가능성이 높은 곳을 겨누는지 한 그림에서 비교합니다. "
                           "실사 타일 모델 장면에도 같은 지도가 붙습니다 (그 화면의 '표면에 붙인 이미지'에서 켜고 끄기).")
-    lvl = c[1].radio("표시 등급", ["상·중", "상만"], horizontal=True, disabled=not on, **_w("g3d_seep_cls", "상·중"))
+    lvl = _choice("표시 등급", ["상·중", "상만"], c[1], disabled=not on, **_w("g3d_seep_cls", "상·중"))
     op = c[2].slider("지도 불투명도", 0.2, 0.9, step=0.05, disabled=not on, **_w("g3d_seep_op", 0.55))
     return {"on": on, "classes": (2,) if lvl == "상만" else (2, 1), "opacity": op}
 
@@ -342,8 +349,9 @@ def _uniform_controls(c, best, in_plane):
     else:
         trend, plunge = choices[pick]
     flat = plunge < grouting3d.MIN_CREST_PLUNGE
-    mode = c[1].radio("천공 위치", ["상부에서 (커튼선)", "벽면에서"], key="g3d_mode", index=1 if flat else 0,
-                      disabled=flat)
+    positions = ["상부에서 (커튼선)", "벽면에서"]
+    mode = _choice("천공 위치", positions, c[1], key="g3d_mode", default=positions[1 if flat else 0], disabled=flat,
+                   format_func=lambda p: p.split(" (")[0])
     if flat:
         mode = "벽면에서"
         c[1].caption(f"경사 {plunge:.0f}° 공은 상부에서 뚫으면 절벽 위에만 머물러 벽면에서 뚫는 배치로 그립니다 "
@@ -386,9 +394,9 @@ def _grouting_surface_and_draw(result, sets, targeted, trend, plunge, spacing, l
         st.caption("메쉬는 3차원 장면을 처음 그릴 때 한 번 읽습니다 (1분 안팎, 이후 다시 읽지 않음).")
     c = st.columns(3)
     wall_modes = ["모델 표면 (메쉬·평면 DEM)", "점군"]
-    wall_mode = c[0].radio("암벽 표시", wall_modes, horizontal=True, **_w("g3d_wall_mode", wall_modes[0]),
-                           help="모델 표면: 메쉬(또는 절벽면 평행 DEM)가 있으면 그것을, 없으면 점군을 그립니다. "
-                                "점군: 분석 점군을 정사영상 색으로 (점 수를 늘릴수록 형상이 또렷하고 화면은 무거움)")
+    wall_mode = _choice("암벽 표시", wall_modes, c[0], **_w("g3d_wall_mode", wall_modes[0]),
+                        help="모델 표면: 메쉬(또는 절벽면 평행 DEM)가 있으면 그것을, 없으면 점군을 그립니다. "
+                             "점군: 분석 점군을 정사영상 색으로 (점 수를 늘릴수록 형상이 또렷하고 화면은 무거움)")
     opacity = c[1].slider("암벽 불투명도", 0.05, 1.0, step=0.05, **_w("g3d_opacity", 1.0),
                           help="낮출수록 암벽 뒤의 공과 절리면이 비쳐 보입니다. 특정 구간만 안쪽을 보려면 아래 "
                                "'표면 잘라내기'를 함께 쓰세요.")
@@ -487,8 +495,7 @@ def _grouting_surface_and_draw(result, sets, targeted, trend, plunge, spacing, l
                     icon=":material/info:")
         if len(table) and "new_high_joints" in table:
             st.caption(f"공 {len(table)}개, 총 천공 {table['length_m'].sum():.0f} m. 방향·경사는 공마다 다릅니다 "
-                       "(표의 trend/plunge). new_high_joints = 그 공이 새로 관통하는 유출 '상' 절리 수, "
-                       "sets_crossed = 지나는 절리군. 3차원 장면에서 표면 잘라내기, 아래 단면 보기로 암반 속을 확인하세요.")
+                       "(표의 방위·경사). 3차원 장면에서 표면 잘라내기, 아래 단면 보기로 암반 속을 확인하세요.")
         elif len(table) and "target_joint" in table:
             st.caption(f"공 {len(table)}개, 총 천공 {table['length_m'].sum():.0f} m (공 길이 평균 {table['length_m'].mean():.1f} m). "
                        "대상 절리별: " + ", ".join(f"{k} {v}개" for k, v in table["target_joint"].value_counts().items()))
@@ -498,9 +505,9 @@ def _grouting_surface_and_draw(result, sets, targeted, trend, plunge, spacing, l
         if len(table):
             if "breaks_out_at_m" in table and table["breaks_out_at_m"].notna().any():
                 n = int(table["breaks_out_at_m"].notna().sum())
-                st.warning(f"{n}개 공이 계획 길이 전에 암반 밖으로 나갑니다 (빨간 ✕, 표의 breaks_out_at_m). "
+                st.warning(f"{n}개 공이 계획 길이 전에 암반 밖으로 나갑니다 (빨간 ✕, 표의 '암반 이탈'). "
                            "방향·위치·길이를 조정하세요.")
-            st.dataframe(table, hide_index=True, width="stretch")
+            _table(table)
         _section_view(result, sets)
         _tiles_view(result, sets, mp, pdir)
         out = st.session_state.get("output_dir")

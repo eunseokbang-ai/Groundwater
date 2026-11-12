@@ -2,7 +2,8 @@
 import numpy as np
 import streamlit as st
 
-from groundwater.viz.dashboard.components import _figure_window, _open_tiles_viewer, _variant_picker, _view3d
+from groundwater.viz.dashboard.components import (_figure_window, _note, _open_tiles_viewer, _table, _variant_picker,
+    _view3d)
 from groundwater.viz.dashboard.state import _saved, _session_cache, _site_dir, _w
 
 
@@ -21,10 +22,11 @@ def render_site_joints(result):
     if not secs:
         st.info("구간 결과가 없습니다 (현장 폴더/구간/<이름>/분석결과).")
         return
-    st.caption("모든 구간의 절리면을 한 공간에 놓고, 같은 방향의 절리군은 구간이 달라도 같은 색(±20°)으로 그립니다. 관측된 면은 그 "
-               "크기의 원판, **연장**은 그 원판을 몇 배로 키운 가정입니다 (굴착면에 드러난 절리는 잘려 있어 실제로는 더 멀리 "
-               "이어집니다). **연속 가능면**은 같은 절리군이고 한 평면 위(1 m, 8° 이내, 120 m 범위)에 놓인 면들의 묶음으로, "
-               "관측 자료가 직접 보여 주는 연속성입니다. 지표는 맨땅 DTM이고, 그 아래가 땅속(암반·토사)입니다.")
+    _note("모든 구간의 절리면을 한 공간에 놓고, 같은 방향의 절리군은 구간이 달라도 같은 색(±20°)으로 그립니다.",
+          "모든 구간의 절리면을 한 공간에 놓고, 같은 방향의 절리군은 구간이 달라도 같은 색(±20°)으로 그립니다. 관측된 면은 그 "
+          "크기의 원판, **연장**은 그 원판을 몇 배로 키운 가정입니다 (굴착면에 드러난 절리는 잘려 있어 실제로는 더 멀리 "
+          "이어집니다). **연속 가능면**은 같은 절리군이고 한 평면 위(1 m, 8° 이내, 120 m 범위)에 놓인 면들의 묶음으로, "
+          "관측 자료가 직접 보여 주는 연속성입니다. 지표는 맨땅 DTM이고, 그 아래가 땅속(암반·토사)입니다.")
     c0 = st.columns([1.2, 4], vertical_alignment="bottom")
     variant = _variant_picker(site, "sj_variant", c0[0])
     names = [n for n, _ in site3d.section_results(site, variant)]
@@ -155,7 +157,7 @@ def render_site_joints(result):
                 T = C[["id", "group_label", "sections", "n", "span_m", "area_m2", "dip", "dd", "rms_m", "x", "y", "z"]].rename(
                     columns={"group_label": "현장 절리군", "sections": "구간", "n": "면 수", "span_m": "길이 (m)",
                              "area_m2": "관측 면적 (m²)", "dip": "경사", "dd": "경사방향", "rms_m": "평면 오차 (m)"}).round(1)
-                st.dataframe(T, hide_index=True, width="stretch")
+                _table(T, {"id": "연속 가능면"})
                 st.download_button("CSV 내려받기", T.to_csv(index=False).encode("utf-8-sig"), "연속가능_불연속면.csv",
                                    "text/csv", icon=":material/download:")
     st.caption(f"지표: {gpath.name if gpath else '없음'} · 절리면: " + ", ".join(pick))

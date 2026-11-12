@@ -7,7 +7,7 @@ import streamlit as st
 
 from groundwater import report
 from groundwater.validation.field_compare import summarize_errors
-from groundwater.viz.dashboard.components import _map_chart
+from groundwater.viz.dashboard.components import _choice, _map_chart, _note, _table
 from groundwater.viz.dashboard.state import _reg_crs
 
 
@@ -26,7 +26,7 @@ def render_tables(result):
     ]
     sets_df = pd.DataFrame(sets_rows)
     st.subheader("절리군")
-    st.dataframe(sets_df, width="stretch")
+    _table(sets_df)
 
     patches = [p for d in result.discontinuity_sets for p in d.patches]
     # all centroids to wall coordinates in one call (one call per face took ~1 s per rerun on a full wall)
@@ -49,7 +49,8 @@ def render_tables(result):
     ]
     patches_df = pd.DataFrame(patch_rows)
     st.subheader("개별 절리면")
-    st.dataframe(patches_df, width="stretch")
+    _table(patches_df, {"chainage_m": ("측점 (m)", "%.2f"), "elevation_m": ("표고 (m)", "%.2f"),
+                        "area_m2": ("면적 (m²)", "%.3f")})
     st.download_button(
         "절리면 목록 CSV 내려받기", patches_df.to_csv(index=False).encode("utf-8-sig"),
         file_name="discontinuity_patches.csv",
@@ -90,7 +91,7 @@ def render_validation(result):
     cols[1].metric("평균 각도 오차", f"{summary['mean_error_deg']:.1f}°" if summary["mean_error_deg"] is not None else "-")
     cols[2].metric("RMSE", f"{summary['rmse_deg']:.1f}°" if summary["rmse_deg"] is not None else "-")
     cols[3].metric("최대 오차", f"{summary['max_error_deg']:.1f}°" if summary["max_error_deg"] is not None else "-")
-    st.dataframe(result.field_comparison, width="stretch")
+    _table(result.field_comparison)
 
 
 def render_report(result):
@@ -114,15 +115,16 @@ def render_reference_overlays(result, folder):
 
     data = ro.load(folder)
     entries = data["overlays"]
-    st.caption("현장 특별 자료: 참고 이미지(실측도·사진)를 절벽면 평행 정사영상·DSM 위 제자리에 겹쳐 봅니다. 사진은 정사영상과 "
-               "특징점 정합(호모그래피), 실측도는 형상 대응점으로 맞춘 박판 스플라인입니다. 위치 정확도: 사진 수 cm, 실측도 "
-               "수 cm~10 cm (암면 아래쪽 사진 밖 구간은 더 큼). 타일 모델 뷰어(그라우팅 입력 탭)에서도 같은 이미지가 표면에 붙습니다.")
+    _note("현장 특별 자료: 참고 이미지(실측도·사진)를 절벽면 평행 정사영상·DSM 위 제자리에 겹쳐 봅니다.",
+          "현장 특별 자료: 참고 이미지(실측도·사진)를 절벽면 평행 정사영상·DSM 위 제자리에 겹쳐 봅니다. 사진은 정사영상과 "
+          "특징점 정합(호모그래피), 실측도는 형상 대응점으로 맞춘 박판 스플라인입니다. 위치 정확도: 사진 수 cm, 실측도 "
+          "수 cm~10 cm (암면 아래쪽 사진 밖 구간은 더 큼). 타일 모델 뷰어(그라우팅 입력 화면)에서도 같은 이미지가 표면에 붙습니다.")
     c = st.columns([2, 1, 1])
     labels = [e["name"] for e in entries]
     pick = c[0].multiselect("겹칠 이미지", labels, default=[labels[0]], key="ref_pick")
-    bg = c[1].radio("바탕", ["정사영상", "DSM 음영기복", "DSM 미세기복"], key="ref_bg",
-                    help="미세기복 = DSM에서 3 cm보다 넓은 굴곡을 뺀 것. 균열·턱은 보이지만, 몇 mm 깊이로 쪼아 새긴 암각화 선은 "
-                         "드론 DSM(2.83 mm 격자)에서 거의 드러나지 않습니다 — 위치는 겹친 이미지로 확인하세요.")
+    bg = _choice("바탕", ["정사영상", "DSM 음영기복", "DSM 미세기복"], c[1], key="ref_bg",
+                 help="미세기복 = DSM에서 3 cm보다 넓은 굴곡을 뺀 것. 균열·턱은 보이지만, 몇 mm 깊이로 쪼아 새긴 암각화 선은 "
+                      "드론 DSM(2.83 mm 격자)에서 거의 드러나지 않습니다 — 위치는 겹친 이미지로 확인하세요.")
     alpha = c[2].slider("이미지 불투명도", 0.0, 1.0, 0.75, 0.05, key="ref_alpha")
     res = c[2].select_slider("해상도 (mm)", [3, 5, 8], value=5, key="ref_res") / 1000
     chosen = [e for e in entries if e["name"] in pick] or entries[:1]

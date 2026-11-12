@@ -1,12 +1,11 @@
 """View '절리군 지도': where each joint set crops out on the wall, with the 3D cloud, the tiled model and the
 joint planes inside the rock."""
 import numpy as np
-import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
-from groundwater.viz.dashboard.components import (MAX_FACADE_DISPLAY_PX, _figure_window, _map_chart,
-    _session_tiles_input, _tiles_scene_button, _view3d)
+from groundwater.viz.dashboard.components import (MAX_FACADE_DISPLAY_PX, _choice, _figure_window, _map_chart, _note,
+    _session_tiles_input, _table, _tiles_scene_button, _view3d)
 from groundwater.viz.dashboard.state import (_chainage_range, _flow_sets, _fragment, _range_state, _result_key,
     _saved, _session_cache, _w, _w_clamped)
 
@@ -107,10 +106,10 @@ def render_setmap(result):
     sets = _flow_sets(result)
     if show_cloud or show_int:
         coord_modes = ["실제 평면 (직선)", "측점 기준 (벽 따라 펼침)"]
-        st.radio("3D·수평 단면 좌표", coord_modes, horizontal=True, **_w("sm_coords", coord_modes[0]),
-                 help="실제 평면: 지도 좌표를 보는 구간 가운데의 벽 방향으로 돌려 그립니다 (평면인 절리는 평면, 직선). "
-                      "측점 기준: 벽 기준선을 따라 펼친 좌표 — 기준선이 꺾이는 곳(원호)에서는 축이 함께 돌아 평면인 "
-                      "절리도 휘어 보입니다. 측점·깊이를 정확히 읽을 때 씁니다.")
+        _choice("3D·수평 단면 좌표", coord_modes, **_w("sm_coords", coord_modes[0]),
+                help="실제 평면: 지도 좌표를 보는 구간 가운데의 벽 방향으로 돌려 그립니다 (평면인 절리는 평면, 직선). "
+                     "측점 기준: 벽 기준선을 따라 펼친 좌표 — 기준선이 꺾이는 곳(원호)에서는 축이 함께 돌아 평면인 "
+                     "절리도 휘어 보입니다. 측점·깊이를 정확히 읽을 때 씁니다.")
     if show_cloud:
         st.divider()
         _setmap_cloud(result)
@@ -190,20 +189,22 @@ def _setmap_interior(result, sets):
 
     st.subheader(":material/layers: 암반 내부 절리면 — 노출된 암면에서 안쪽으로 연장")
     modes = ["주요 절리면 구조 (거시)", "개별 절리 연장 (상세)"]
-    mode = st.radio("표시 방식", modes, horizontal=True, **_w("sm_mode", modes[0]),
-                    help="거시: 절리군마다 가장 길게 이어진 절리면 몇 개만 골라 암반 블록을 관통하게 그려, 큰 절리면이 "
-                         "어떻게 이어지고 서로 만나는지(교선) 봅니다. 상세: 관측된 절리 하나하나를 그 크기만큼 연장합니다.")
+    mode = _choice("표시 방식", modes, **_w("sm_mode", modes[0]),
+                   help="거시: 절리군마다 가장 길게 이어진 절리면 몇 개만 골라 암반 블록을 관통하게 그려, 큰 절리면이 "
+                        "어떻게 이어지고 서로 만나는지(교선) 봅니다. 상세: 관측된 절리 하나하나를 그 크기만큼 연장합니다.")
     major = mode == modes[0]
     if major:
-        st.caption("절리군마다, 같은 평면 위에 놓인 노출면과 트레이스를 모아(절리군 평균 방향, 법선 방향 위치가 간격의 1/3 "
-                   "안) 합친 길이가 가장 긴 평면을 **주요 절리면**으로 골라 암반 블록 끝까지 연장합니다. 검은 선은 주요 "
-                   "절리면끼리 만나는 교선, 굵은 색 선은 그 절리면이 암면에 드러나는 선, 블록 옆·윗·뒷면의 색 선은 블록을 "
-                   "자른 단면에 나타나는 절리 흔적입니다. 위치는 관측, 연장은 해석(가정)입니다.")
+        _note("절리군마다 근거가 가장 긴 평면을 **주요 절리면**으로 골라 암반 블록 끝까지 연장합니다 — 위치는 관측, 연장은 가정.",
+              "절리군마다, 같은 평면 위에 놓인 노출면과 트레이스를 모아(절리군 평균 방향, 법선 방향 위치가 간격의 1/3 "
+              "안) 합친 길이가 가장 긴 평면을 **주요 절리면**으로 골라 암반 블록 끝까지 연장합니다. 검은 선은 주요 "
+              "절리면끼리 만나는 교선, 굵은 색 선은 그 절리면이 암면에 드러나는 선, 블록 옆·윗·뒷면의 색 선은 블록을 "
+              "자른 단면에 나타나는 절리 흔적입니다. 위치는 관측, 연장은 해석(가정)입니다.")
     else:
-        st.caption("노출된 암면에서 찾은 절리면(입면 트레이스와 3차원 노출면)을 각자의 면 방향 그대로 암반 속으로 연장한 "
-                   "추정입니다. 위치와 방향은 관측값, 안쪽으로 이어지는 크기만 가정(트레이스·노출면 크기 × 배율, 최대값 "
-                   "제한)이며 암면 앞으로 나오는 부분은 잘라냅니다. 벽면과 거의 평행한 노출면은 연장해도 암면 자체이므로 빼고, "
-                   "그런 절리군은 **통계 절리망**(간격·연장성으로 만든 가상 절리, 위치 임의)으로 안쪽 분포를 볼 수 있습니다.")
+        _note("노출된 암면의 절리면을 각자의 방향 그대로 암반 속으로 연장한 추정입니다 — 위치와 방향은 관측값, 크기만 가정.",
+              "노출된 암면에서 찾은 절리면(입면 트레이스와 3차원 노출면)을 각자의 면 방향 그대로 암반 속으로 연장한 "
+              "추정입니다. 위치와 방향은 관측값, 안쪽으로 이어지는 크기만 가정(트레이스·노출면 크기 × 배율, 최대값 "
+              "제한)이며 암면 앞으로 나오는 부분은 잘라냅니다. 벽면과 거의 평행한 노출면은 연장해도 암면 자체이므로 빼고, "
+              "그런 절리군은 **통계 절리망**(간격·연장성으로 만든 가상 절리, 위치 임의)으로 안쪽 분포를 볼 수 있습니다.")
     c = st.columns(4)
     if major:
         per_set = c[0].slider("절리군마다 최대 평면 수", 1, 10, **_w("sm_major_max", 4),
@@ -213,10 +214,11 @@ def _setmap_interior(result, sets):
                               help="그 평면 위에 놓인 노출면 연장성 + 트레이스 길이의 합. 짧은 근거의 평면은 그리지 않습니다.")
         min_sep = c[1].slider("나란한 평면 사이 최소 간격 (m)", 0.5, 5.0, step=0.5, **_w("sm_major_sep", 1.5),
                               help="이보다 가까운 평면은 같은 면의 굴곡으로 보고 하나만 그립니다.")
-        extent_lbl = c[0].radio("연장 범위", ["블록 전체", "관측 범위 + 3 m"], horizontal=True,
-                                **_w("sm_major_ext", "블록 전체"),
-                                help="블록 전체: 주요 절리면을 블록 끝까지 (거시 구조). 관측 범위: 그 절리면의 노출면·"
-                                     "트레이스가 있는 범위에서 3 m만 더")
+        extent_lbl = _choice("연장 범위", ["블록 전체", "관측 범위 + 3 m"], c[0],
+                             format_func=lambda e: e.replace("관측 범위 + 3 m", "관측 +3 m"),
+                             **_w("sm_major_ext", "블록 전체"),
+                             help="블록 전체: 주요 절리면을 블록 끝까지 (거시 구조). 관측 범위: 그 절리면의 노출면·"
+                                  "트레이스가 있는 범위에서 3 m만 더")
         bdepth = c[1].slider("블록 깊이 (암면 뒤, m)", 2.0, 20.0, step=1.0, **_w("sm_major_depth", 8.0))
         jmax = bdepth
     else:
@@ -229,9 +231,10 @@ def _setmap_interior(result, sets):
         dfn_depth = c[1].slider("통계 절리망 두께 (m)", 1.0, 15.0, step=0.5, disabled=not dfn, **_w("sm_dfn_depth", 5.0))
     jop = c[2].slider("절리면 불투명도", 0.1, 1.0, step=0.05, **_w("sm_jop", 0.75))
     face_modes = {"점군": "points", "표면 (반투명)": "surface", "끄기": "none"}
-    face = face_modes[c[2].radio("암면 표시", list(face_modes), horizontal=True, **_w("sm_face_mode", "점군"),
-                                 help="점군: 분석 점군을 정사영상 색으로 촘촘하게 (점 수를 늘릴수록 형상이 또렷하고 화면은 "
-                                      "무거움). 표면: 정사영상 색을 입힌 암면 표면을 반투명하게 (가벼움)")]
+    face = face_modes[_choice("암면 표시", list(face_modes), c[2], format_func=lambda m: m.split(" (")[0],
+                              **_w("sm_face_mode", "점군"),
+                              help="점군: 분석 점군을 정사영상 색으로 촘촘하게 (점 수를 늘릴수록 형상이 또렷하고 화면은 "
+                                   "무거움). 표면: 정사영상 색을 입힌 암면 표면을 반투명하게 (가벼움)")]
     face_op = c[2].slider("암면 불투명도", 0.05, 1.0, step=0.05, **_w("sm_face_op", 0.35), disabled=face == "none",
                           help="낮출수록 암면 뒤의 절리면이 잘 보입니다")
     npts = c[2].select_slider("암면 점 수 (표시 구간 안)", [100_000, 250_000, 500_000, 1_000_000, 2_000_000],
@@ -266,7 +269,7 @@ def _setmap_interior(result, sets):
         st.caption(f"주요 절리면 {len(model['planes'])}개 · 교선 {len(model['intersections'])}개 (근거 길이 = 그 평면 위 "
                    "노출면 연장성 + 트레이스 길이의 합)")
         with st.expander("주요 절리면 목록", expanded=False):
-            st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
+            _table(rows)
     else:
         opts = {"depth_factor": jdepth, "max_depth": jmax, "dfn": dfn, "dfn_depth": dfn_depth, "traces": traces}
         with st.spinner("절리면을 암반 속으로 연장하는 중..."):

@@ -55,6 +55,11 @@ def main() -> None:
     pd.DataFrame(rows).to_csv(field_dir / "scanline_joints.csv", index=False)
     print(f"Wrote {len(rows)} field measurements to {field_dir / 'scanline_joints.csv'}")
 
+    # wall plan line for folder mode (configs/demo_site.yaml carries the same line and pit point)
+    wall = pd.DataFrame([{"kind": "wall", "x": x, "y": y} for x, y in POLYLINE] + [{"kind": "pit", "x": 8.0, "y": -10.0}])
+    wall.to_csv(DEMO_DIR / "wall_line.csv", index=False)
+    print(f"Wrote {DEMO_DIR / 'wall_line.csv'}")
+
 
 if __name__ == "__main__":
     main()

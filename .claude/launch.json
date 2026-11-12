@@ -21,6 +21,13 @@
       "runtimeExecutable": ".venv/Scripts/python.exe",
       "runtimeArgs": ["webapp/ortho_history/serve.py", "--port", "8611", "--no-browser"],
       "port": 8611
+    },
+    {
+      "name": "tools-snap",
+      "runtimeExecutable": ".venv/Scripts/python.exe",
+      "runtimeArgs": ["-m", "groundwater.viz.wall_digitizer", "--no-browser", "--port", "8613"],
+      "env": {"PYTHONPATH": "src"},
+      "port": 8613
     }
   ]
 }

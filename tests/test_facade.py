@@ -168,3 +168,76 @@ def test_pipeline_on_synthetic_wall(tmp_path):
     assert patches["elevation_m"].between(100.0, 105.0).all()
     assert (tmp_path / "out" / "facade_rgb.tif").exists()
     assert (tmp_path / "out" / "wall_frame.json").exists()
+
+
+def test_thermal_folders_correction_and_overlay(tmp_path):
+    """Planar RGB / thermal pairs are told apart by name; the local correction interpolates world shifts by
+    chainage; the blend shows the thermal image only where it has data; the popup page carries both images."""
+    import rasterio
+    from rasterio.transform import from_origin
+
+    from groundwater.facade import planar
+    from groundwater.facade import thermal as TH
+    from groundwater.facade.frame import WallFrame
+    from groundwater.viz import thermal_view as TV
+
+    def write(path, bands):
+        with rasterio.open(path, "w", driver="GTiff", width=8, height=6, count=bands, dtype="uint8",
+                           crs="EPSG:4978", transform=from_origin(0, 6, 1, 1)) as ds:
+            ds.write(np.zeros((bands, 6, 8), np.uint8))
+
+    for sub, stem in (("planar_rgb", "west"), ("planar_thermal", "west")):
+        (tmp_path / sub).mkdir()
+        write(tmp_path / sub / f"{stem}_dem.tif", 1)
+        write(tmp_path / sub / f"{stem}_ortho.tif", 4)
+    f = TH.find_folders(tmp_path)
+    assert f["rgb"].name == "planar_rgb" and f["thermal"].name == "planar_thermal"
+    # a single-band temperature mosaic next to the thermal DEM is found as such, and not taken for the DEM
+    write(tmp_path / "planar_thermal" / "a_temperature_ortho.tif", 1)
+    assert TH.temperature_ortho(f["thermal"]).name == "a_temperature_ortho.tif"
+    assert planar.find_planar_pair(f["thermal"])[0].name == "west_dem.tif"
+    assert TH.temperature_ortho(f["rgb"]) is None
+
+    frame = WallFrame([[0.0, 0.0], [20.0, 0.0]])
+    corr = {"knots_xy": [[0.0, 0.0], [10.0, 0.0]], "t": [[0.0, 0.0, 0.0], [0.2, 0.0, -0.1]]}
+    shift = planar._correction_by_chainage(frame, corr)
+    assert np.allclose(shift([5.0, 10.0, 15.0]), [[0.1, 0, -0.05], [0.2, 0, -0.1], [0.2, 0, -0.1]])
+    assert planar._correction_by_chainage(frame, None) is None
+
+    rgb = np.full((4, 4, 3), 100, np.uint8)
+    th = np.full((4, 4, 3), 255, np.uint8)
+    th[:2] = (200, 0, 0)
+    b = TV.blend(rgb, th, 0.5)
+    assert (b[:2] == (150, 50, 50)).all() and (b[2:] == 100).all()          # no thermal data: RGB unchanged
+    page = TV.overlay_page({"rgb": rgb, "thermal": th, "ext": [0, 4, 0, 4], "res": 1.0}, "t", 0.3)
+    assert page.count("data:image/") == 2 and 'value="30"' in page
+
+
+def test_thermal_palette_index_and_local_z():
+    """An iron-palette ramp maps to a rising index; a cold spot stands out in the local z-score, its surroundings do not."""
+    from groundwater import thermal_anomaly as TA
+
+    ramp = np.array([[97, 3, 117], [181, 10, 144], [223, 42, 62], [247, 75, 7], [249, 138, 3]], np.uint8)
+    img = np.repeat(ramp[None], 40, axis=0)                        # 40 x 5 image of the five palette steps
+    valid = np.ones(img.shape[:2], bool)
+    lut = TA.palette_lut(img, valid, steps=5)
+    idx = TA.palette_index(img, valid, lut)
+    assert np.all(np.diff(idx[0]) > 0) and idx[0, 0] == 0 and idx[0, -1] == 1
+    field = np.full((80, 80), 0.6, np.float32) + np.random.default_rng(0).normal(0, 0.02, (80, 80)).astype(np.float32)
+    field[38:42, 38:42] = 0.3                                      # a cold spot
+    ok = np.ones_like(field, bool)
+    m, sd, _ = TA._masked_mean_std(field, ok, 10.0)
+    z = (field - m) / np.maximum(sd, 0.02)
+    assert z[38:42, 38:42].max() < -2.0 and np.abs(z[:20, :20]).max() < 4.0
+
+
+def test_section_polygon_in_plan_limits_the_region():
+    """A section polygon in map coordinates keeps only that section's points, whatever their wall coordinates."""
+    from groundwater.facade.region import is_active, region_mask
+
+    xy = np.array([[0.0, 0.0], [10.0, 0.0], [20.0, 0.0]])
+    uvw = np.array([[5.0, 1.0, 0.0], [5.0, 1.0, 0.0], [5.0, 1.0, 0.0]])        # same wall position for all
+    region = {"map_polygon": [[-1, -1], [12, -1], [12, 1], [-1, 1]]}
+    assert is_active(region)
+    assert region_mask(uvw, region, xy).tolist() == [True, True, False]
+    assert region_mask(uvw, region).all()                                     # without map coordinates: no effect

@@ -1,0 +1,36 @@
+# 시안 A "현장 보고서" -- warm paper, deep teal-green accent, serif headings (report feel)
+
+[theme]
+base = "light"
+primaryColor = "#0F6B5C"
+backgroundColor = "#FBF8F1"
+secondaryBackgroundColor = "#F1EADB"
+textColor = "#2B2A26"
+linkColor = "#0F6B5C"
+borderColor = "#DDD3BF"
+showWidgetBorder = true
+showSidebarBorder = true
+baseRadius = "6px"
+buttonRadius = "6px"
+font = "'IBM Plex Sans KR':https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+KR:wght@400;500;600;700&display=swap"
+headingFont = "'Nanum Myeongjo':https://fonts.googleapis.com/css2?family=Nanum+Myeongjo:wght@700;800&display=swap"
+codeFont = "'JetBrains Mono':https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500&display=swap"
+baseFontSize = 14
+headingFontSizes = ["30px", "22px", "18px", "16px", "14px", "12px"]
+headingFontWeights = [800, 700, 700, 700, 600, 600]
+linkUnderline = false
+greenColor = "#2F7D4A"
+blueColor = "#2C6E8F"
+orangeColor = "#B5651D"
+redColor = "#A63D32"
+violetColor = "#6B5B95"
+grayColor = "#7A7466"
+chartCategoricalColors = ["#0F6B5C", "#B5651D", "#2C6E8F", "#A63D32", "#6B5B95", "#8A8F3C", "#7A7466"]
+dataframeBorderColor = "#DDD3BF"
+dataframeHeaderBackgroundColor = "#F1EADB"
+
+[theme.sidebar]
+backgroundColor = "#F1EADB"
+secondaryBackgroundColor = "#E6DCC7"
+textColor = "#2B2A26"
+borderColor = "#D3C7AE"

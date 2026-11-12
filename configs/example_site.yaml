@@ -73,6 +73,10 @@ patches:
   # reported (drone resolution cannot resolve them anyway).
   link_distance: 0.05
   min_patch_points: 30
+  # Smallest joint surface reported (m2, in its own plane). A real rough face breaks every set into
+  # thousands of small facets; 0.2 m2 (~45 cm square) keeps the surfaces a drone survey can resolve
+  # (Ulsan cliff: ~300 patches per set, 80-90 % of the set's points). 0 keeps everything.
+  min_patch_area: 0.2
 
 facade:
   # Facade orthophoto pixel size (m). Rendered from the cropped cloud before
@@ -83,15 +87,19 @@ facade:
   fill_iterations: 2
 
 trace_mapping:
-  # Gaussian blur before edge detection (pixels); 0 disables it.
-  blur_sigma_px: 1.5
-  # Canny edge thresholds (0-255 gray, after a 1-99 percentile stretch) and
-  # Hough line limits in facade pixels. A line needs as many edge pixels as
-  # hough_min_line_length_px.
-  canny_low: 50
-  canny_high: 150
-  hough_min_line_length_px: 20
-  hough_max_line_gap_px: 5
+  # Facade traces, in metres (independent of the facade pixel size). Detection grid; auto_scale sets it
+  # to max(2 cm, facade pixel).
+  resolution_m: 0.02
+  # Open joints are grooves in the facade depth: closing with this disc minus the depth, deeper than
+  # min_recess_m. The same disc is used for the dark-line (black-hat) detector on the grey image.
+  recess_kernel_m: 0.15
+  min_recess_m: 0.02
+  dark_contrast: 30
+  # Block edges: depth slope steeper than this (1 = 45 deg out of the facade plane).
+  min_step_slope: 1.0
+  # Shortest trace kept, and how far a trace may bend before it is split into straight pieces.
+  min_length_m: 0.5
+  straightness_m: 0.03
 
 trace_matching:
   # A 3D patch counts as confirmed when a facade trace passes within
@@ -99,3 +107,16 @@ trace_matching:
   # which that joint plane should cross the wall.
   tolerance: 0.1
   max_angle_deg: 20.0
+
+kinematics:
+  # Markland-type screening against the face fitted in chainage windows of window_m.
+  friction_deg: 30.0
+  window_m: 5.0
+  # Sensitivity check: a set at least this steep (e.g. 85) is also tested dipping the other way (planar sliding,
+  # toppling). null = the measured direction only (default: the faces show which way a steep set leans).
+  vertical_deg: null
+
+# Analysis region in wall coordinates (chainage / elevation limits, [min, max], null = open). A polygon
+# drawn in the facade tool is stored as analysis_region.csv in the site folder and added automatically.
+region: null
+

@@ -27,5 +27,5 @@ def estimate_local_geometry(
         normals[start:start + _EIG_CHUNK] = vecs[:, :, 0]
         variation[start:start + _EIG_CHUNK] = np.where(total > 0, vals[:, 0] / np.where(total > 0, total, 1.0), 1.0 / 3.0)
 
-    pcd.normals = o3d.utility.Vector3dVector(normals)
+    pcd.normals = o3d.utility.Vector3dVector(np.ascontiguousarray(normals))
     return variation

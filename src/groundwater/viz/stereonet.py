@@ -5,7 +5,6 @@ import numpy as np
 
 from ..discontinuity.geometry import DiscontinuitySet
 
-_CMAP = plt.get_cmap("tab10")
 
 
 def plot_stereonet(
@@ -20,8 +19,10 @@ def plot_stereonet(
     fig = plt.figure(figsize=(6, 6))
     ax = fig.add_subplot(111, projection="stereonet")
 
-    for i, dset in enumerate(discontinuity_sets):
-        color = _CMAP(i % 10)
+    from ..report import SET_COLORS             # the set colours of every other view (set map, 3D, sections)
+
+    for dset in discontinuity_sets:
+        color = SET_COLORS[dset.set_id % len(SET_COLORS)]
         dips = np.array([p.dip for p in dset.patches])
         dip_dirs = np.array([p.dip_direction for p in dset.patches])
         strikes = (dip_dirs - 90.0) % 360.0

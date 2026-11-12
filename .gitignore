@@ -4,7 +4,28 @@ __pycache__/
 *.egg-info/
 data/processed/
 webapp/ortho_history/tiles/
+webapp/ortho_history/photos/
 webapp/ortho_history/layers.json
+webapp/ortho_history/terrain/
 과거정사영상/
+DEM(5m)/
 .pytest_cache/
 .claude/scheduled_tasks.lock
+data/cache/
+
+# field data, screen recordings and the vendor SDK: large, kept outside git
+Filed_Data/
+dji_thermal_sdk_*/
+*.mp4
+# analysis results written next to the demo data
+data/raw/*/분석결과*/
+# decks, PDFs and rendered figures are build outputs (the scripts and notes that make them are tracked)
+docs/**/*.pptx
+docs/**/*.pdf
+docs/**/*.png
+docs/**/*.jpg
+docs/**/*.svg
+docs/figures/round2/
+docs/figures/data/bangudae/
+design/screens/
+.streamlit/secrets.toml

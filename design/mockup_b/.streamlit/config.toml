@@ -1,0 +1,37 @@
+# 시안 B "현장 관제실" -- dark slate, cyan accent, high contrast for 3D views and imagery
+
+[theme]
+base = "dark"
+primaryColor = "#22B8CF"
+backgroundColor = "#0E141B"
+secondaryBackgroundColor = "#17212B"
+codeBackgroundColor = "#17212B"
+textColor = "#E3EAF2"
+linkColor = "#4FD1E5"
+borderColor = "#263442"
+showWidgetBorder = true
+showSidebarBorder = true
+baseRadius = "8px"
+buttonRadius = "8px"
+font = "'Noto Sans KR':https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;500;700&display=swap"
+headingFont = "'Noto Sans KR':https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@700;900&display=swap"
+codeFont = "'JetBrains Mono':https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500&display=swap"
+baseFontSize = 14
+headingFontSizes = ["28px", "21px", "17px", "15px", "14px", "12px"]
+headingFontWeights = [900, 700, 700, 700, 600, 600]
+linkUnderline = false
+greenColor = "#3DDC97"
+blueColor = "#4FA3F7"
+orangeColor = "#F5A524"
+redColor = "#F2545B"
+violetColor = "#A78BFA"
+grayColor = "#8796A8"
+chartCategoricalColors = ["#22B8CF", "#F5A524", "#A78BFA", "#3DDC97", "#F2545B", "#4FA3F7", "#8796A8"]
+dataframeBorderColor = "#263442"
+dataframeHeaderBackgroundColor = "#17212B"
+
+[theme.sidebar]
+backgroundColor = "#0A1016"
+secondaryBackgroundColor = "#141D26"
+textColor = "#E3EAF2"
+borderColor = "#1F2B37"

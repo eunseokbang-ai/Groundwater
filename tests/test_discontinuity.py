@@ -9,7 +9,7 @@ import open3d as o3d
 import pytest
 
 from groundwater.discontinuity.clustering import find_orientation_sets, voxel_connected_components
-from groundwater.discontinuity.geometry import axial_mean, compute_spacing
+from groundwater.discontinuity.geometry import axial_mean, compute_spacing, scanline_spacing
 from groundwater.discontinuity.normals import estimate_local_geometry
 from groundwater.discontinuity.segmentation import extract_discontinuities
 from groundwater.validation.field_compare import angular_difference, dip_dipdir_to_normal
@@ -153,3 +153,92 @@ def test_spacing_ignores_coplanar_fragments():
     centroids = np.array([[0, 0, 0.0], [3, 0, 0.01], [0, 0, 0.5], [2, 1, 0.51], [0, 0, 1.0]])
     mean, _ = compute_spacing(centroids, normal, coplanar_tolerance=0.05)
     assert abs(mean - 0.5) < 0.02
+
+
+def test_scanline_spacing_ignores_side_by_side_patches():
+    # two stacks of joints 0.5 m apart, 10 m apart along the wall and offset by 0.2 m in depth: sorting
+    # all centroids would report ~0.2-0.3 m gaps, scanlines only see each stack's own 0.5 m spacing
+    normal = np.array([0.0, 0.0, 1.0])
+    stack_a = [[0.0, 0.0, z] for z in (0.0, 0.5, 1.0, 1.5)]
+    stack_b = [[10.0, 0.0, z + 0.2] for z in (0.0, 0.5, 1.0, 1.5)]
+    centroids = np.array(stack_a + stack_b)
+    mean, std = scanline_spacing(centroids, np.full(len(centroids), 1.0), normal, coplanar_tolerance=0.05)
+    assert abs(mean - 0.5) < 1e-6 and std < 1e-6
+
+
+def test_netting_and_flat_ground_masks():
+    """Cyan-grey netting over a grey wall and a level bench band: the mask finds both; a flat face reaching 2 m
+    back into the slope is ground, a 0.3 m ledge is a joint."""
+    from types import SimpleNamespace
+
+    from groundwater.discontinuity import cleaning as C
+
+    res = 0.05
+    H, W = 200, 300                                       # 10 m x 15 m facade
+    rgb = np.full((H, W, 3), 128, np.uint8)               # grey rock
+    rgb[:80, :150] = (94, 103, 106)                       # netting: hue ~190, saturation ~0.11
+    valid = np.ones((H, W), bool)
+    net = C.netting_area(rgb, valid, res)
+    assert net[10:70, 10:140].mean() > 0.95 and net[100:, :].mean() == 0 and net[:80, 170:].mean() == 0
+    depth = np.zeros((H, W), np.float32)                  # vertical wall at w = 0 ...
+    v = (H - np.arange(H)) * res                          # elevation of each row (top = 10 m)
+    band = (v > 4.0) & (v < 5.0)                          # ... and a ground band rising 1 m over 3 m back
+    depth[band, :] = -(v[band, None] - 4.0) * 3.0
+    depth[v >= 5.0, :] = -3.0                             # the wall above, set back by the bench
+    flat = C.flat_area(depth, res)
+    inner = (v > 4.25) & (v < 4.75)
+    assert flat[inner][:, 20:-20].mean() > 0.95 and flat[v > 7.0].mean() == 0 and flat[v < 2.0].mean() == 0
+    # flat faces in 3D: the depth extent decides
+    uvw = np.r_[np.c_[np.zeros(50), np.zeros(50), np.linspace(0, -2.0, 50)],
+                np.c_[np.zeros(50), np.zeros(50), np.linspace(0, -0.3, 50)]]
+    patch = np.r_[np.full(50, 1), np.full(50, 2)]
+    sets = [SimpleNamespace(patches=[SimpleNamespace(patch_id=1, dip=5.0), SimpleNamespace(patch_id=2, dip=5.0)])]
+    assert C.flat_faces(uvw, patch, sets) == {1}
+
+
+def test_planar_parts_splits_a_step_and_keeps_a_plane():
+    """Two parallel faces 0.5 m apart joined at a step are two faces; one rough-free plane stays one."""
+    from groundwater.discontinuity.segmentation import planar_parts
+
+    rng = np.random.default_rng(0)
+    xa, ya = rng.uniform(0, 5, 20000), rng.uniform(0, 5, 20000)
+    front = np.column_stack([xa, ya, rng.normal(0, 0.01, 20000)])
+    xb, yb = rng.uniform(5, 10, 20000), rng.uniform(0, 5, 20000)
+    back = np.column_stack([xb, yb, rng.normal(-0.5, 0.01, 20000)])
+    zs = rng.uniform(-0.5, 0, 2000)                                    # the riser joining them
+    riser = np.column_stack([np.full(2000, 5.0) + rng.normal(0, 0.01, 2000), rng.uniform(0, 5, 2000), zs])
+    pts = np.vstack([front, back, riser])
+    nrm = np.tile([0.0, 0.0, 1.0], (len(pts), 1))
+    nrm[-2000:] = [1.0, 0.0, 0.0]
+    parts = planar_parts(pts, nrm, 0.1, 0.10, 30)
+    big = sorted(parts, key=len, reverse=True)[:2]
+    assert len(big) == 2 and all(len(p) > 15000 for p in big)
+    assert {int(np.round(pts[p, 2].mean() * 2)) for p in big} == {0, -1}   # one at z = 0, one at z = -0.5
+    assert len(planar_parts(front, nrm[:20000], 0.1, 0.10, 30)) == 1
+
+
+def test_weak_peak_is_a_candidate_and_a_pinned_set_is_kept():
+    """A small pole cluster under the contrast bar is reported as a candidate; pinned, it becomes a set at that
+    orientation."""
+    from groundwater.discontinuity.clustering import find_orientation_sets, plane_normal
+    from groundwater.discontinuity.geometry import normal_to_dip_dipdir
+
+    rng = np.random.default_rng(3)
+
+    def cluster(dip, dd, n, spread=4.0):
+        v = plane_normal(dip, dd) + rng.normal(0, np.radians(spread), (n, 3))
+        return v / np.linalg.norm(v, axis=1, keepdims=True)
+
+    noise = rng.normal(0, 1, (60000, 3))
+    noise /= np.linalg.norm(noise, axis=1, keepdims=True)
+    normals = np.vstack([cluster(87, 35, 40000), cluster(88, 260, 40000), cluster(48, 47, 2000, 6.0), noise])
+    info = {}
+    _, axes = find_orientation_sets(normals, info=info)
+    found = [normal_to_dip_dipdir(a) for a in axes]
+    assert not any(abs(d - 48) < 8 and abs(a - 47) < 15 for d, a in found)
+    assert any(abs(c["dip"] - 48) < 6 and abs((c["dip_direction"] - 47 + 180) % 360 - 180) < 10 for c in info["candidates"])
+    info = {}
+    _, axes = find_orientation_sets(normals, fixed_sets=[(48, 47)], info=info)
+    pinned = [normal_to_dip_dipdir(axes[k]) for k in info["fixed"]]
+    assert len(pinned) == 1 and abs(pinned[0][0] - 48) < 0.5 and abs(pinned[0][1] - 47) < 0.5
+    assert len(axes) == 3

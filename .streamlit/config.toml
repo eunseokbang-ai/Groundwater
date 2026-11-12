@@ -1,0 +1,51 @@
+# 대시보드 테마 (시안 C "기관 브랜드") -- white body, deep navy sidebar, institutional blue, crisp cards
+
+[theme]
+base = "light"
+primaryColor = "#1D4F91"
+backgroundColor = "#FFFFFF"
+secondaryBackgroundColor = "#F2F5F9"
+textColor = "#1B2430"
+linkColor = "#1D4F91"
+borderColor = "#D9E0EA"
+showWidgetBorder = true
+showSidebarBorder = false
+baseRadius = "4px"
+buttonRadius = "4px"
+font = "'Nanum Gothic':https://fonts.googleapis.com/css2?family=Nanum+Gothic:wght@400;700;800&display=swap"
+headingFont = "'Nanum Gothic':https://fonts.googleapis.com/css2?family=Nanum+Gothic:wght@800&display=swap"
+codeFont = "'JetBrains Mono':https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500&display=swap"
+baseFontSize = 14
+headingFontSizes = ["28px", "21px", "17px", "15px", "14px", "12px"]
+headingFontWeights = [800, 800, 700, 700, 700, 700]
+linkUnderline = false
+blueColor = "#1D4F91"
+greenColor = "#1E7F4F"
+orangeColor = "#C56A11"
+redColor = "#B42318"
+violetColor = "#5B4BA5"
+grayColor = "#5F6B7A"
+chartCategoricalColors = ["#1D4F91", "#E07B1A", "#1E7F4F", "#B42318", "#5B4BA5", "#0F8B8D", "#5F6B7A"]
+dataframeBorderColor = "#D9E0EA"
+dataframeHeaderBackgroundColor = "#EEF2F7"
+
+[theme.sidebar]
+backgroundColor = "#13294B"
+secondaryBackgroundColor = "#1C3762"
+textColor = "#F2F5FA"
+borderColor = "#27467A"
+primaryColor = "#3D7DD8"
+codeBackgroundColor = "#1C3762"
+# status boxes (info / success / warning / error) readable on the navy sidebar
+blueBackgroundColor = "#24467D"
+blueTextColor = "#D6E6FF"
+greenBackgroundColor = "#1D4B3B"
+greenTextColor = "#C3F0D6"
+yellowBackgroundColor = "#4A4223"
+yellowTextColor = "#FFE9A8"
+orangeBackgroundColor = "#4D3420"
+orangeTextColor = "#FFD7B0"
+redBackgroundColor = "#4F2629"
+redTextColor = "#FFC9C9"
+grayBackgroundColor = "#22385C"
+grayTextColor = "#C9D4E5"

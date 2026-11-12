@@ -1,0 +1,480 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #f4f6f9;
+               font: 13px "Nanum Gothic", "Malgun Gothic", sans-serif; color: #1b2430; }
+  #view { position: absolute; inset: 0; }
+  canvas { display: block; outline: none; }
+  .box { position: absolute; background: rgba(255,255,255,0.92); border: 1px solid #d9e0ea; border-radius: 4px;
+         padding: 6px 9px; box-shadow: 0 1px 3px rgba(0,0,0,0.08); }
+  #legend { top: 8px; left: 8px; max-height: calc(100% - 90px); overflow: auto; max-width: 340px; }
+  #legend label { display: flex; align-items: center; gap: 6px; padding: 2px 0; cursor: pointer; white-space: nowrap; }
+  .sw { width: 13px; height: 13px; border-radius: 2px; flex: none; border: 1px solid rgba(0,0,0,0.25); }
+  #help { right: 8px; top: 8px; font-size: 12px; line-height: 1.55; max-width: 300px; }
+  #help b { color: #1d4f91; }
+  #help button { margin: 4px 4px 0 0; font: inherit; padding: 2px 8px; cursor: pointer; }
+  #help label { display: block; margin-top: 4px; cursor: pointer; }
+  #readout { left: 8px; bottom: 8px; font-size: 12px; min-height: 16px; }
+  #gizmo { position: absolute; right: 8px; bottom: 8px; width: 96px; height: 96px; pointer-events: none; }
+  #labels { position: absolute; inset: 0; pointer-events: none; overflow: hidden; }
+  .lbl { position: absolute; transform: translate(-50%, -120%); padding: 1px 5px; border-radius: 3px; white-space: nowrap;
+         background: rgba(255,255,255,0.88); border: 1px solid rgba(0,0,0,0.2); font-size: 12px; font-weight: 700; }
+  #err { position: absolute; inset: 0; display: none; align-items: center; justify-content: center; color: #b42318; }
+  #wheelhint { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); padding: 8px 14px;
+               border-radius: 6px; background: rgba(0,0,0,0.6); color: #fff; font-size: 14px; pointer-events: none;
+               opacity: 0; transition: opacity 0.4s; }
+</style>
+</head>
+<body>
+<div id="view"></div>
+<div id="labels"></div>
+<div id="legend" class="box"></div>
+<div id="help" class="box">
+  <div id="help-free">
+  <b>왼쪽 드래그</b> 이동 · <b>Ctrl + 휠</b> 커서 쪽 확대·축소<br>
+  <b>오른쪽 드래그</b> 확대·축소 (아래 = 확대)<br>
+  <b>가운데 드래그</b> 또는 <b>Ctrl + 왼쪽 드래그</b> 회전<br>
+  <b>Shift + 왼쪽 드래그</b> 둘러보기
+  </div>
+  <div id="help-ball" style="display:none">
+  <b>왼쪽 드래그</b> 회전 중심 둘레로 회전<br>
+  <b>Ctrl + 휠</b> · <b>오른쪽 드래그</b> 중심 쪽 확대·축소<br>
+  <b>가운데 드래그</b> 또는 <b>Shift + 왼쪽 드래그</b> 이동
+  </div>
+  <b>더블클릭</b> 그 점을 회전 중심으로 · <b>클릭</b> 정보<br>
+  <b>Space</b> 모델 중심으로 · <b>Home</b> 처음 시점<br>
+  <span id="embednote">휠만 돌리면 페이지가 스크롤됩니다 (화면을 클릭한 뒤에는 휠로 확대·축소)</span>
+  <label><input id="ball" type="checkbox"> 회전 중심 고정 (트랙볼)</label>
+  <button id="centre" type="button">모델 중심으로</button><button id="reset" type="button">시점 처음으로</button>
+</div>
+<div id="readout" class="box">불러오는 중…</div>
+<canvas id="gizmo" width="192" height="192"></canvas>
+<div id="err"></div>
+<div id="wheelhint">Ctrl + 휠로 확대·축소 (또는 화면을 한 번 클릭한 뒤 휠)</div>
+<script type="importmap">
+{ "imports": { "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+               "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/" } }
+</script>
+<script id="scene-data" type="application/json">__SCENE_JSON__</script>
+<script type="module">
+import * as THREE from "three";
+import { LineSegments2 } from "three/addons/lines/LineSegments2.js";
+import { LineSegmentsGeometry } from "three/addons/lines/LineSegmentsGeometry.js";
+import { LineMaterial } from "three/addons/lines/LineMaterial.js";
+
+const S = JSON.parse(document.getElementById("scene-data").textContent);
+const $ = (id) => document.getElementById(id);
+// colours are sent as sRGB bytes and shown as they are (as in the 2D views), not colour-managed
+THREE.ColorManagement.enabled = false;
+
+function b64(s, Type) {
+  const bin = atob(s), n = bin.length, u8 = new Uint8Array(n);
+  for (let i = 0; i < n; i++) u8[i] = bin.charCodeAt(i);
+  return new Type(u8.buffer);
+}
+
+const host = $("view");
+const renderer = new THREE.WebGLRenderer({ antialias: true, logarithmicDepthBuffer: true });
+renderer.outputColorSpace = THREE.LinearSRGBColorSpace;
+renderer.setPixelRatio(window.devicePixelRatio || 1);
+renderer.setClearColor(0xf4f6f9, 1);
+host.appendChild(renderer.domElement);
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(40, 1, Math.max(S.radius * 1e-4, 1e-3), S.radius * 100);
+camera.up.set(0, 0, 1);
+// r155+ lights are physical (Lambert divides by pi); a light from the upper left of the viewer shows the relief
+scene.add(new THREE.AmbientLight(0xffffff, 1.5));
+const headlight = new THREE.DirectionalLight(0xffffff, 2.2);
+camera.add(headlight);
+headlight.position.set(-0.5, 0.8, 0.6);
+scene.add(camera);
+
+// round point sprite (plotly markers are discs)
+const dot = (() => {
+  const c = document.createElement("canvas"); c.width = c.height = 64;
+  const g = c.getContext("2d"); g.beginPath(); g.arc(32, 32, 30, 0, 2 * Math.PI); g.fillStyle = "#fff"; g.fill();
+  return new THREE.CanvasTexture(c);
+})();
+
+const lineMats = [];
+const objects = [];          // { obj, item }
+const pickable = [];
+const labels = [];           // { el, p (Vector3), obj } -- text drawn over the canvas
+const dpr = renderer.getPixelRatio();
+
+for (const it of S.items) {
+  let obj = null;
+  const transparent = it.opacity < 0.999;
+  if (it.kind === "points") {
+    const g = new THREE.BufferGeometry();
+    g.setAttribute("position", new THREE.BufferAttribute(b64(it.pos, Float32Array), 3));
+    // alphaTest cuts the sprite to a disc; it is compared with alpha x opacity, so it must stay below the opacity
+    const m = new THREE.PointsMaterial({ size: it.size * dpr, sizeAttenuation: false, map: dot,
+                                         alphaTest: Math.min(0.5, it.opacity * 0.5),
+                                         transparent, opacity: it.opacity, depthWrite: !transparent });
+    if (it.col) { g.setAttribute("color", new THREE.BufferAttribute(b64(it.col, Uint8Array), 3, true)); m.vertexColors = true; }
+    else m.color = new THREE.Color(it.color);
+    obj = new THREE.Points(g, m);
+  } else if (it.kind === "lines") {
+    const g = new LineSegmentsGeometry();
+    g.setPositions(b64(it.pos, Float32Array));
+    const m = new LineMaterial({ color: new THREE.Color(it.color).getHex(), linewidth: it.width, transparent,
+                                 opacity: it.opacity, dashed: !!it.dash, dashSize: it.dashSize, gapSize: it.dashSize * 0.7,
+                                 worldUnits: false });
+    lineMats.push(m);
+    obj = new LineSegments2(g, m);
+    if (it.dash) obj.computeLineDistances();
+  } else if (it.kind === "mesh") {
+    let g = new THREE.BufferGeometry();
+    g.setAttribute("position", new THREE.BufferAttribute(b64(it.pos, Float32Array), 3));
+    g.setIndex(new THREE.BufferAttribute(b64(it.idx, Uint32Array), 1));
+    const m = new THREE.MeshLambertMaterial({ side: THREE.DoubleSide, transparent, opacity: it.opacity,
+                                              depthWrite: !transparent, flatShading: !!it.flat });
+    if (it.vcol) { g.setAttribute("color", new THREE.BufferAttribute(b64(it.vcol, Uint8Array), 3, true)); m.vertexColors = true; }
+    else if (it.fcol) {                       // a colour per face: one vertex per face corner
+      const fc = b64(it.fcol, Uint8Array);
+      g = g.toNonIndexed();
+      const n = g.attributes.position.count, c = new Uint8Array(n * 3);
+      for (let v = 0; v < n; v++) { const f = Math.floor(v / 3); c[3 * v] = fc[3 * f]; c[3 * v + 1] = fc[3 * f + 1]; c[3 * v + 2] = fc[3 * f + 2]; }
+      g.setAttribute("color", new THREE.BufferAttribute(c, 3, true)); m.vertexColors = true;
+    } else m.color = new THREE.Color(it.color);
+    g.computeVertexNormals();
+    obj = new THREE.Mesh(g, m);
+    if (transparent) obj.renderOrder = 2;
+  } else if (it.kind === "labels") {
+    obj = new THREE.Group();                  // only holds the visibility; the text is HTML over the canvas
+    const P = b64(it.pos, Float32Array);
+    it.text.forEach((t, i) => {
+      const el = document.createElement("div");
+      el.className = "lbl"; el.textContent = t; el.style.color = it.color;
+      $("labels").appendChild(el);
+      labels.push({ el, p: new THREE.Vector3(P[3 * i], P[3 * i + 1], P[3 * i + 2]), obj });
+    });
+  }
+  if (!obj) continue;
+  if (it.top && obj.material) { obj.material.depthTest = false; obj.renderOrder = 5; }
+  obj.userData.item = it;
+  scene.add(obj);
+  objects.push({ obj, item: it });
+  if (it.kind === "points" || it.kind === "mesh") pickable.push(obj);
+}
+
+let dirty = true;                               // something other than the camera changed: draw again
+// --- legend: one row per legend group, toggling all of its items ---
+const groups = new Map();
+for (const o of objects) {
+  const k = o.item.group;
+  if (!groups.has(k)) groups.set(k, { label: o.item.name, color: o.item.color, legend: false, objs: [] });
+  const g = groups.get(k); g.objs.push(o.obj); g.legend = g.legend || o.item.legend;
+}
+for (const [k, g] of groups) {
+  if (!g.legend) continue;
+  const row = document.createElement("label");
+  row.innerHTML = `<input type="checkbox" checked><span class="sw" style="background:${g.color}"></span><span></span>`;
+  row.lastChild.textContent = g.label;
+  row.firstChild.onchange = (e) => { g.objs.forEach((o) => (o.visible = e.target.checked)); dirty = true; };
+  $("legend").appendChild(row);
+}
+if (!$("legend").children.length) $("legend").style.display = "none";
+
+// --- rotation centre: the model centre until a double click picks another point ---
+const centre = new THREE.Vector3(0, 0, 0);
+const marker = new THREE.Mesh(new THREE.SphereGeometry(1, 16, 12),
+                              new THREE.MeshBasicMaterial({ color: 0xf59e0b, depthTest: false, transparent: true, opacity: 0.9 }));
+marker.renderOrder = 10;
+marker.visible = false;
+scene.add(marker);
+let markerUntil = 0;
+function showMarker(p, ms = 900) { marker.position.copy(p); markerUntil = performance.now() + ms; }
+
+// --- camera: start view, kept across reruns of the dashboard ---
+const STORE = "view3d:" + S.key;
+const finite = (a) => a.every(Number.isFinite);
+const fovHalf = () => THREE.MathUtils.degToRad(camera.fov / 2);
+function frameDistance() { return S.radius / Math.sin(fovHalf()) * 1.05 * S.eyeScale; }
+function startView() {
+  const e = new THREE.Vector3(...S.eye).normalize();
+  camera.position.copy(e.multiplyScalar(frameDistance()));
+  camera.up.set(0, 0, 1);
+  camera.lookAt(0, 0, 0);
+  centre.set(0, 0, 0);
+  camera.updateMatrixWorld();
+}
+function toModelCentre() {                   // keep the viewing direction, bring the whole model back to the middle
+  const fwd = new THREE.Vector3(); camera.getWorldDirection(fwd);
+  centre.set(0, 0, 0);
+  camera.position.copy(fwd.multiplyScalar(-frameDistance()));
+  level();
+  camera.updateMatrixWorld();
+  showMarker(centre);
+  saveView();
+}
+function saveView() {
+  if (!finite(camera.position.toArray()) || !finite(camera.quaternion.toArray())) return;
+  try {
+    localStorage.setItem(STORE, JSON.stringify({ p: camera.position.toArray(), q: camera.quaternion.toArray(),
+                                                 c: centre.toArray(), ball: $("ball").checked, sig: S.sig }));
+  } catch (e) {}
+}
+function loadView() {
+  try {
+    const v = JSON.parse(localStorage.getItem(STORE) || "null");
+    if (v && v.sig === S.sig && finite(v.p) && finite(v.q)) {
+      camera.position.fromArray(v.p); camera.quaternion.fromArray(v.q);
+      if (v.c && finite(v.c)) centre.fromArray(v.c);
+      $("ball").checked = !!v.ball;
+      return true;
+    }
+  } catch (e) {}
+  return false;
+}
+if (!loadView()) startView();
+window.__view3d = { camera, renderer, scene };                                     // for checking the view from the console
+function syncHelp() {
+  $("help-free").style.display = $("ball").checked ? "none" : "block";
+  $("help-ball").style.display = $("ball").checked ? "block" : "none";
+}
+syncHelp();
+$("ball").onchange = () => { syncHelp(); showMarker(centre, 1500); saveView(); };
+$("reset").onclick = () => { startView(); saveView(); };
+$("centre").onclick = toModelCentre;
+
+function resize() {
+  const w = host.clientWidth, h = host.clientHeight;
+  if (w < 2 || h < 2) return;                 // hidden or not laid out yet: a zero aspect would make every matrix NaN
+  renderer.setSize(w, h);
+  camera.aspect = w / Math.max(h, 1);
+  camera.updateProjectionMatrix();
+  lineMats.forEach((m) => m.resolution.set(w, h));
+  dirty = true;
+}
+window.addEventListener("resize", resize);
+new ResizeObserver(resize).observe(host);
+resize();
+
+// --- picking: the scene point under the cursor (points within a few pixels, mesh faces) ---
+const ray = new THREE.Raycaster();
+const ndc = new THREE.Vector2();
+function worldPerPixel(depth) { return 2 * depth * Math.tan(fovHalf()) / host.clientHeight; }
+function pick(ev) {
+  const r = renderer.domElement.getBoundingClientRect();
+  ndc.set(((ev.clientX - r.left) / r.width) * 2 - 1, -((ev.clientY - r.top) / r.height) * 2 + 1);
+  ray.setFromCamera(ndc, camera);
+  ray.params.Points.threshold = worldPerPixel(camera.position.distanceTo(centre) + S.radius * 0.1) * 4;
+  const hits = ray.intersectObjects(pickable.filter((o) => o.visible), false);
+  return hits.length ? hits[0] : null;
+}
+// nothing under the cursor: the point on the ray at the depth of the rotation centre
+function onRayAtCentreDepth() {
+  const fwd = new THREE.Vector3(); camera.getWorldDirection(fwd);
+  const depth = Math.max(centre.clone().sub(camera.position).dot(fwd), S.radius * 0.02);
+  const dir = ray.ray.direction.clone();
+  return camera.position.clone().addScaledVector(dir, depth / Math.max(dir.dot(fwd), 1e-3));
+}
+
+// --- mouse: Cesium style, or a trackball about the rotation centre ---
+const el = renderer.domElement;
+el.tabIndex = 0;
+let drag = null;
+el.addEventListener("contextmenu", (e) => e.preventDefault());
+el.addEventListener("pointerdown", (e) => {
+  e.preventDefault();
+  if (host.clientHeight < 2) return;
+  el.focus();
+  try { el.setPointerCapture(e.pointerId); } catch (err) {}      // keeps the drag when the cursor leaves the view
+  const ball = $("ball").checked;
+  let mode = null;
+  if (ball) {
+    if (e.button === 1 || (e.button === 0 && e.shiftKey)) mode = "pan";
+    else if (e.button === 0) mode = "rotate";
+    else if (e.button === 2) mode = "zoom";
+  } else {
+    if (e.button === 1 || (e.button === 0 && (e.ctrlKey || e.metaKey))) mode = "rotate";
+    else if (e.button === 0 && e.shiftKey) mode = "look";
+    else if (e.button === 0) mode = "pan";
+    else if (e.button === 2) mode = "zoom";
+  }
+  const hit = pick(e);
+  // what the drag turns or zooms about: the trackball centre; otherwise the grabbed point (the centre if nothing)
+  let pivot;
+  if (ball && mode !== "pan") pivot = centre.clone();
+  else pivot = hit ? hit.point.clone() : onRayAtCentreDepth();
+  if (mode === "rotate") showMarker(pivot, 1e9);
+  drag = { mode, x: e.clientX, y: e.clientY, x0: e.clientX, y0: e.clientY, pivot, hit };
+});
+el.addEventListener("pointermove", (e) => {
+  if (!drag) { hover(e); return; }
+  const dx = e.clientX - drag.x, dy = e.clientY - drag.y;
+  drag.x = e.clientX; drag.y = e.clientY;
+  const right = new THREE.Vector3().setFromMatrixColumn(camera.matrixWorld, 0);
+  const upv = new THREE.Vector3().setFromMatrixColumn(camera.matrixWorld, 1);
+  const fwd = new THREE.Vector3(); camera.getWorldDirection(fwd);
+  if (drag.mode === "pan") {                  // the grabbed point stays under the cursor
+    const depth = Math.max(drag.pivot.clone().sub(camera.position).dot(fwd), 1e-3);
+    const k = worldPerPixel(depth);
+    const move = right.clone().multiplyScalar(-dx * k).addScaledVector(upv, dy * k);
+    camera.position.add(move);
+    if ($("ball").checked) centre.add(move);   // the trackball centre travels with the view
+  } else if (drag.mode === "zoom") {          // drag down = closer
+    const f = Math.exp(-dy * 0.006);
+    const off = camera.position.clone().sub(drag.pivot).multiplyScalar(f);
+    if (off.length() > S.radius * 2e-4) camera.position.copy(drag.pivot).add(off);
+  } else if (drag.mode === "rotate") {        // orbit about the pivot: sideways = heading, up/down = tilt
+    const q = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), -dx * 0.006);
+    const qt = new THREE.Quaternion().setFromAxisAngle(right, -dy * 0.006);
+    const newFwd = fwd.clone().applyQuaternion(qt);
+    if (Math.abs(newFwd.z) < 0.995) q.multiply(qt);                 // never over the top
+    const off = camera.position.clone().sub(drag.pivot).applyQuaternion(q);
+    camera.position.copy(drag.pivot).add(off);
+    camera.quaternion.premultiply(q);
+    level();
+  } else if (drag.mode === "look") {          // turn the camera where it stands
+    const q = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), -dx * 0.004);
+    const qt = new THREE.Quaternion().setFromAxisAngle(right, -dy * 0.004);
+    const newFwd = fwd.clone().applyQuaternion(qt);
+    if (Math.abs(newFwd.z) < 0.995) q.multiply(qt);
+    camera.quaternion.premultiply(q);
+    level();
+  }
+  camera.updateMatrixWorld();
+});
+function level() {                            // keep the horizon level (no roll), as Cesium does
+  const fwd = new THREE.Vector3(); camera.getWorldDirection(fwd);
+  camera.up.set(0, 0, 1);
+  camera.lookAt(camera.position.clone().add(fwd));
+}
+el.addEventListener("pointerup", (e) => {
+  if (drag && Math.hypot(e.clientX - drag.x0, e.clientY - drag.y0) < 4) info(drag.hit);
+  if (drag && drag.mode === "rotate") markerUntil = performance.now() + 400;
+  drag = null;
+  saveView();
+});
+el.addEventListener("dblclick", (e) => {     // this point becomes the rotation centre and comes to the middle
+  const h = pick(e);
+  if (!h) return;
+  const fwd = new THREE.Vector3(); camera.getWorldDirection(fwd);
+  const dist = h.point.distanceTo(camera.position);
+  centre.copy(h.point);
+  camera.position.copy(h.point).addScaledVector(fwd, -dist);
+  camera.updateMatrixWorld();
+  showMarker(centre, 1500);
+  saveView();
+});
+// a plain wheel scrolls the dashboard page (this view is one of several on it); Ctrl + wheel (trackpad pinch)
+// zooms, and so does the wheel after a click in the view, until the pointer leaves it
+// in its own window (dashboard popup) the wheel always zooms
+const STANDALONE = window.parent === window;
+if (STANDALONE) {
+  $("embednote").remove();
+  document.querySelectorAll("#help b").forEach((b) => { if (b.textContent === "Ctrl + 휠") b.textContent = "휠"; });
+}
+let armed = false;
+el.addEventListener("pointerdown", () => { armed = true; });
+el.addEventListener("pointerleave", () => { armed = false; });
+function scrollPage(e) {
+  const px = e.deltaY * (e.deltaMode === 1 ? 40 : e.deltaMode === 2 ? 800 : 1);
+  try {                                        // the page around this frame (same origin: srcdoc iframe)
+    const d = window.parent.document;
+    const main = d.querySelector('[data-testid="stMain"]') || d.scrollingElement;
+    main.scrollBy({ top: px });
+  } catch (_) { /* not embedded: nothing to scroll */ }
+  const h = $("wheelhint");
+  h.style.opacity = "1";
+  clearTimeout(h._t); h._t = setTimeout(() => { h.style.opacity = "0"; }, 1200);
+}
+el.addEventListener("wheel", (e) => {
+  e.preventDefault();
+  if (!STANDALONE && !e.ctrlKey && !armed) { scrollPage(e); return; }
+  if (host.clientHeight < 2) return;
+  const hit = pick(e);
+  const p = $("ball").checked ? centre.clone() : (hit ? hit.point.clone() : onRayAtCentreDepth());
+  const f = Math.exp(e.deltaY * (e.deltaMode === 1 ? 0.05 : 0.0015));
+  const off = camera.position.clone().sub(p).multiplyScalar(f);
+  if (off.length() > S.radius * 2e-4) camera.position.copy(p).add(off);
+  camera.updateMatrixWorld();
+  clearTimeout(el._t); el._t = setTimeout(saveView, 300);
+}, { passive: false });
+window.addEventListener("keydown", (e) => {
+  if (e.target && e.target.tagName === "INPUT") return;
+  if (e.code === "Space" || e.key === "c" || e.key === "C") { e.preventDefault(); toModelCentre(); }
+  else if (e.key === "Home" || e.key === "r" || e.key === "R") { e.preventDefault(); startView(); saveView(); }
+});
+
+// --- read-out of the position under the cursor, and click info ---
+const fmt = (v) => (Math.abs(v) >= 1000 ? v.toFixed(0) : v.toFixed(2));
+function coords(p) {
+  const a = [p.x + S.center[0], p.y + S.center[1], p.z + S.center[2]];
+  return S.axes.map((t, i) => `${t} ${fmt(a[i])}`).join(" · ");
+}
+let hoverT = 0;
+function hover(e) {
+  const now = performance.now();
+  if (now - hoverT < 120) return;
+  hoverT = now;
+  const h = pick(e);
+  $("readout").textContent = h ? coords(h.point) : "커서 아래에 물체 없음";
+}
+function info(h) {
+  if (!h) return;
+  const it = h.object.userData.item;
+  let txt = it.name;
+  if (it.text && h.index !== undefined && it.text[h.index]) txt = it.text[h.index];
+  $("readout").textContent = `${txt} — ${coords(h.point)}`;
+}
+
+// --- axis gizmo (which way x / y / z point) ---
+const gz = $("gizmo").getContext("2d");
+function drawGizmo() {
+  gz.clearRect(0, 0, 192, 192);
+  const inv = camera.quaternion.clone().invert();
+  const axes = [[1, 0, 0, "#c0392b", "x"], [0, 1, 0, "#1e7f4f", "y"], [0, 0, 1, "#1d4f91", "z"]];
+  const pts = axes.map(([x, y, z, c, l]) => { const v = new THREE.Vector3(x, y, z).applyQuaternion(inv); return { v, c, l }; })
+    .sort((a, b) => a.v.z - b.v.z);
+  for (const { v, c, l } of pts) {
+    gz.strokeStyle = c; gz.fillStyle = c; gz.lineWidth = 5;
+    gz.beginPath(); gz.moveTo(96, 96); gz.lineTo(96 + v.x * 62, 96 - v.y * 62); gz.stroke();
+    gz.font = "bold 26px sans-serif"; gz.fillText(l, 88 + v.x * 80, 105 - v.y * 80);
+  }
+}
+const tmp = new THREE.Vector3();
+function drawLabels() {
+  const w = host.clientWidth, h = host.clientHeight;
+  for (const L of labels) {
+    tmp.copy(L.p).project(camera);
+    const vis = L.obj.visible && tmp.z < 1 && Math.abs(tmp.x) < 1.05 && Math.abs(tmp.y) < 1.05;
+    L.el.style.display = vis ? "block" : "none";
+    if (vis) { L.el.style.left = `${(tmp.x + 1) / 2 * w}px`; L.el.style.top = `${(1 - tmp.y) / 2 * h}px`; }
+  }
+}
+
+let lastCam = "", lastMarker = true;
+function loop() {
+  requestAnimationFrame(loop);
+  if (host.clientHeight < 2) return;
+  if (!finite(camera.position.toArray())) startView();         // never stay on a broken view
+  const now = performance.now();
+  marker.visible = now < markerUntil;
+  // draw only when the view or the scene changed (the GPU idles while nothing moves)
+  camera.updateMatrixWorld();
+  const cam = camera.matrixWorld.elements.join(",") + camera.projectionMatrix.elements.join(",");
+  if (!dirty && cam === lastCam && !marker.visible && !lastMarker) return;
+  dirty = false; lastCam = cam; lastMarker = marker.visible;
+  if (marker.visible) marker.scale.setScalar(worldPerPixel(marker.position.distanceTo(camera.position)) * 6);
+  renderer.render(scene, camera);
+  drawGizmo();
+  drawLabels();
+}
+loop();
+$("readout").textContent = S.axes.join(" · ");
+</script>
+<script>
+  window.addEventListener("error", (e) => {
+    const d = document.getElementById("err");
+    d.style.display = "flex";
+    d.textContent = "3D 화면을 열 수 없습니다 (인터넷 연결 필요: three.js). " + (e.message || "");
+  });
+</script>
+</body>
+</html>

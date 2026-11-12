@@ -1,0 +1,184 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>입면 도구</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<style>
+  :root { --bg: #f8fafc; --panel: #fff; --text: #1f2937; --muted: #6b7280; --line: #e5e7eb; --accent: #1d6fc2;
+    --manual: #facc15; --region: #22d3ee; --ok: #15803d; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text);
+    font-family: 'Malgun Gothic', 'Apple SD Gothic Neo', 'Noto Sans KR', system-ui, sans-serif; }
+  #app { display: flex; height: 100%; }
+  aside { width: 330px; flex: none; overflow-y: auto; background: var(--panel); border-right: 1px solid var(--line);
+    padding: 16px; font-size: 13px; }
+  #map { flex: 1; background: #111827; cursor: crosshair; }
+  #map.move { cursor: grab; }
+  h1 { font-size: 18px; margin: 0 0 2px; }
+  .sub { color: var(--muted); font-size: 12px; word-break: break-all; margin-bottom: 12px; }
+  section { border-top: 1px solid var(--line); padding: 12px 0; }
+  h2 { font-size: 13px; color: var(--muted); margin: 0 0 8px; }
+  .seg { display: grid; grid-template-columns: repeat(3, 1fr); border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+  .seg button { border: 0; background: #fff; padding: 8px 0; cursor: pointer; font: inherit; }
+  .seg button.on { background: var(--accent); color: #fff; font-weight: 700; }
+  .row { display: flex; gap: 6px; margin: 6px 0; align-items: center; }
+  .row button, .btn { flex: 1; border: 1px solid var(--line); background: #fff; border-radius: 6px; padding: 7px 0;
+    cursor: pointer; font: inherit; }
+  .btn.primary { background: var(--ok); color: #fff; border-color: var(--ok); font-weight: 700; padding: 9px 0; width: 100%; }
+  input[type=text] { width: 100%; padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; font: inherit; }
+  .hint { color: var(--muted); font-size: 12px; line-height: 1.55; }
+  .hint b { color: var(--text); }
+  #msg { margin-top: 8px; font-size: 12px; line-height: 1.5; word-break: break-all; }
+  #msg.ok { color: var(--ok); } #msg.err { color: #b91c1c; }
+  #list { max-height: 180px; overflow-y: auto; font-size: 12px; }
+  #list div { padding: 3px 4px; border-radius: 4px; cursor: pointer; display: flex; justify-content: space-between; }
+  #list div.sel { background: #fef3c7; }
+</style>
+</head>
+<body>
+<div id="app">
+  <aside>
+    <h1>입면 도구</h1>
+    <div class="sub" id="where">불러오는 중...</div>
+
+    <section>
+      <h2>그리기</h2>
+      <div class="seg">
+        <button id="m-trace" class="on">트레이스</button>
+        <button id="m-region">분석 범위</button>
+        <button id="m-move">이동만</button>
+      </div>
+      <p class="hint">
+        <b>트레이스</b>: 절리를 따라 점을 차례로 클릭하고 <b>Enter</b>(또는 더블클릭)로 끝냅니다. Esc로 그리던 선 취소.
+        그린 선을 클릭해 고른 뒤 <b>Delete</b>로 지웁니다.<br>
+        <b>분석 범위</b>: 분석할 암면 둘레를 클릭해 다각형을 만들고 Enter. 위쪽 수목대·아래 수면을 빼는 데 씁니다.
+        다시 그리면 바뀌고, "범위 지우기"로 없앱니다.
+      </p>
+      <div class="row"><input type="text" id="note" placeholder="메모 (선택: 예) 수직 절리, 개구)"></div>
+      <div class="row"><button id="clear-region">범위 지우기</button></div>
+    </section>
+
+    <section>
+      <h2>보기</h2>
+      <div class="row"><label><input type="checkbox" id="show-auto" checked> 자동 검출 트레이스 (방향군 색)</label></div>
+      <div class="row"><label><input type="checkbox" id="show-sets"> 절리군 위치 지도</label></div>
+    </section>
+
+    <section>
+      <h2>수동 트레이스 <span id="n-manual"></span></h2>
+      <div id="list"></div>
+    </section>
+
+    <section>
+      <button class="btn primary" id="save">저장</button>
+      <div id="msg"></div>
+      <p class="hint">저장 후 분석 프로그램에서 <b>분석 실행</b>을 다시 누르면 수동 트레이스와 분석 범위가 반영됩니다.</p>
+    </section>
+  </aside>
+  <div id="map"></div>
+</div>
+<script>
+const $ = id => document.getElementById(id);
+const params = new URLSearchParams(location.search);
+const RESULT = params.get('result') || '', SITE = params.get('site') || '';
+const FAM = ['#e6194b', '#3cb44b', '#4363d8', '#f58231', '#911eb4', '#42d4f4', '#f032e6', '#bfef45'];
+const map = L.map('map', {crs: L.CRS.Simple, minZoom: -4, maxZoom: 9, zoomSnap: 0.25, doubleClickZoom: false,
+                          attributionControl: false});
+map.setView([0, 0], 0);   // a view before any vector layer, so the renderer starts with valid bounds
+let mode = 'trace', manual = [], region = null, current = [], selected = null, nextId = 1;
+let autoLayer = L.layerGroup().addTo(map), setLayer = null;
+const manualLayer = L.layerGroup().addTo(map);
+const drawLine = L.polyline([], {color: '#facc15', weight: 3, dashArray: '6 4'}).addTo(map);
+let regionLayer = null;
+
+function setMode(m) {
+  mode = m; current = []; drawLine.setLatLngs([]);
+  for (const k of ['trace', 'region', 'move']) $('m-' + k).classList.toggle('on', k === m);
+  $('map').classList.toggle('move', m === 'move');
+}
+['trace', 'region', 'move'].forEach(k => $('m-' + k).onclick = () => setMode(k));
+
+const ll = ([u, v]) => [v, u];
+function redraw() {
+  manualLayer.clearLayers();
+  for (const t of manual) {
+    const l = L.polyline(t.points.map(ll), {color: t.id === selected ? '#fb923c' : '#facc15', weight: t.id === selected ? 5 : 3.5});
+    l.on('click', e => { L.DomEvent.stopPropagation(e); selected = t.id; redraw(); });
+    l.bindTooltip(`수동 #${t.id}${t.note ? ' · ' + t.note : ''}`, {sticky: true});
+    manualLayer.addLayer(l);
+  }
+  if (regionLayer) regionLayer.remove();
+  regionLayer = region ? L.polyline([...region, region[0]].map(ll), {color: '#22d3ee', weight: 2.5, dashArray: '8 5'}).addTo(map) : null;
+  $('n-manual').textContent = `(${manual.length})`;
+  $('list').innerHTML = manual.map(t => `<div data-id="${t.id}" class="${t.id === selected ? 'sel' : ''}"><span>#${t.id} ${t.note || ''}</span>`
+    + `<span>${t.points.length}점</span></div>`).join('') || '<span class="hint">없음</span>';
+  [...$('list').children].forEach(d => d.onclick = () => { selected = +d.dataset.id; redraw(); });
+}
+
+function finish() {
+  if (mode === 'trace' && current.length >= 2) {
+    manual.push({id: nextId++, note: $('note').value.trim(), points: current.slice()});
+  } else if (mode === 'region' && current.length >= 3) {
+    region = current.slice();
+  }
+  current = []; drawLine.setLatLngs([]); redraw();
+}
+
+map.on('click', e => {
+  if (mode === 'move') return;
+  current.push([e.latlng.lng, e.latlng.lat]);
+  drawLine.setLatLngs(mode === 'region' && current.length > 2 ? [...current, current[0]].map(ll) : current.map(ll));
+});
+map.on('dblclick', e => { if (mode !== 'move') finish(); });
+document.addEventListener('keydown', e => {
+  if (e.target.tagName === 'INPUT') return;
+  if (e.key === 'Enter') finish();
+  if (e.key === 'Escape') { current = []; drawLine.setLatLngs([]); }
+  if ((e.key === 'Delete' || e.key === 'Backspace') && selected !== null) {
+    manual = manual.filter(t => t.id !== selected); selected = null; redraw(); e.preventDefault();
+  }
+});
+$('clear-region').onclick = () => { region = null; redraw(); };
+
+function msg(t, c) { $('msg').className = c || ''; $('msg').innerHTML = t; }
+
+$('save').onclick = async () => {
+  const q = new URLSearchParams({result: RESULT, site: SITE});
+  const r = await fetch('/api/facade/save?' + q, {method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({traces: manual, region})});
+  const j = await r.json();
+  if (!r.ok) return msg(j.error || '저장 실패', 'err');
+  msg(`저장했습니다.<br>수동 트레이스 ${j.n_traces}개 → ${j.traces_path}<br>`
+      + (j.region_path ? `분석 범위 → ${j.region_path}` : '분석 범위 없음'), 'ok');
+};
+
+async function init() {
+  const q = new URLSearchParams({result: RESULT, site: SITE});
+  const r = await fetch('/api/facade/info?' + q);
+  const info = await r.json();
+  if (!r.ok) { $('where').textContent = info.error; return; }
+  $('where').textContent = info.result;
+  const b = [[info.meta.v_min, info.meta.u_min], [info.meta.v_max, info.meta.u_max]];
+  L.imageOverlay('/facade/preview.jpg?' + q, b).addTo(map);
+  setLayer = L.imageOverlay('/facade/setmap.png?' + q, b, {opacity: 0.8});
+  $('show-sets').onchange = () => $('show-sets').checked ? setLayer.addTo(map) : setLayer.remove();
+  for (const t of info.auto) {
+    const c = t.family === null ? '#9ca3af' : FAM[t.family % FAM.length];
+    autoLayer.addLayer(L.polyline([[t.v1, t.u1], [t.v2, t.u2]], {color: c, weight: 1.6, opacity: 0.9, interactive: false}));
+  }
+  $('show-auto').onchange = () => $('show-auto').checked ? autoLayer.addTo(map) : autoLayer.remove();
+  manual = info.manual; region = info.region;
+  nextId = Math.max(0, ...manual.map(t => t.id)) + 1;
+  map.fitBounds(b);
+  // a few ticks so chainage / elevation can be read
+  L.control.scale({imperial: false, metric: true}).addTo(map);
+  redraw();
+  if (!SITE) msg('현장 폴더가 지정되지 않아 분석 범위는 저장되지 않습니다.', 'err');
+}
+init();
+</script>
+</body>
+</html>

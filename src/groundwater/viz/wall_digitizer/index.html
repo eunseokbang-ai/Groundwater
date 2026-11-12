@@ -1,0 +1,240 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>벽면 기준선 그리기</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<style>
+  :root { --bg: #f8fafc; --panel: #fff; --text: #1f2937; --muted: #6b7280; --line: #e5e7eb; --accent: #1d6fc2;
+    --wall: #e11d48; --pit: #2563eb; --ok: #15803d; --warn: #b45309; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text);
+    font-family: 'Malgun Gothic', 'Apple SD Gothic Neo', 'Noto Sans KR', system-ui, sans-serif; }
+  #app { display: flex; height: 100%; }
+  aside { width: 320px; flex: none; overflow-y: auto; background: var(--panel); border-right: 1px solid var(--line);
+    padding: 16px; font-size: 13px; }
+  #map { flex: 1; cursor: crosshair; }
+  #map.move { cursor: grab; }
+  h1 { font-size: 18px; margin: 0 0 2px; }
+  .sub { color: var(--muted); font-size: 12px; word-break: break-all; margin-bottom: 12px; }
+  section { border-top: 1px solid var(--line); padding: 12px 0; }
+  h2 { font-size: 13px; color: var(--muted); margin: 0 0 8px; }
+  .seg { display: grid; grid-template-columns: repeat(3, 1fr); border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+  .seg button { border: 0; background: #fff; padding: 8px 0; cursor: pointer; font: inherit; }
+  .seg button.on { background: var(--accent); color: #fff; font-weight: 700; }
+  .row { display: flex; gap: 6px; margin: 6px 0; align-items: center; }
+  .row button, .btn { flex: 1; border: 1px solid var(--line); background: #fff; border-radius: 6px; padding: 7px 0;
+    cursor: pointer; font: inherit; }
+  .btn.primary { background: var(--ok); color: #fff; border-color: var(--ok); font-weight: 700; padding: 9px 0; width: 100%; }
+  input[type=text] { width: 100%; padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; font: inherit; font-size: 12px; }
+  input[type=range] { flex: 1; }
+  .stat { display: grid; grid-template-columns: 80px 1fr; gap: 3px 8px; }
+  .stat dt { color: var(--muted); } .stat dd { margin: 0; font-weight: 700; }
+  .hint { color: var(--muted); font-size: 12px; line-height: 1.55; }
+  .hint b { color: var(--text); }
+  #msg { margin-top: 8px; font-size: 12px; line-height: 1.5; word-break: break-all; }
+  #msg.ok { color: var(--ok); } #msg.err { color: #b91c1c; }
+  #status { position: absolute; z-index: 1000; left: 50%; top: 16px; transform: translateX(-50%); background: #111827;
+    color: #fff; padding: 8px 14px; border-radius: 8px; font-size: 13px; }
+  .vtx { background: #fff; border: 2.5px solid var(--wall); border-radius: 50%; width: 22px; height: 22px;
+    display: grid; place-items: center; font-size: 11px; font-weight: 700; color: var(--wall); }
+  .pit { background: var(--pit); border: 2.5px solid #fff; border-radius: 50%; width: 20px; height: 20px;
+    box-shadow: 0 0 0 2px var(--pit); color: #fff; display: grid; place-items: center; font-size: 11px; font-weight: 700; }
+</style>
+</head>
+<body>
+<div id="app">
+  <aside>
+    <h1>벽면 기준선 그리기</h1>
+    <div class="sub" id="ortho-name">정사영상 불러오는 중...</div>
+
+    <section>
+      <h2>그리기</h2>
+      <div class="seg">
+        <button id="m-wall" class="on">벽면선</button>
+        <button id="m-pit">피트 지점</button>
+        <button id="m-move">이동만</button>
+      </div>
+      <div class="row"><button id="undo">마지막 점 취소</button><button id="clear">전체 지우기</button></div>
+      <p class="hint">
+        <b>벽면선</b>: 암사면 하단(벽 밑)을 따라 클릭. 끝에서 끝까지 순서대로 찍으면 됩니다.<br>
+        점은 끌어서 옮기고, <b>오른쪽 클릭</b>으로 지웁니다. 선 위를 클릭하면 그 자리에 점이 끼워집니다.<br>
+        <b>피트 지점</b>: 벽 앞(매립지·피트 쪽) 아무 곳이나 한 번 클릭. 안 찍으면 저장할 때 DTM에서 낮은 쪽으로 자동 지정.<br>
+        단축키: Ctrl+Z 취소 · Esc 이동만
+      </p>
+    </section>
+
+    <section>
+      <h2>현재 선</h2>
+      <dl class="stat">
+        <dt>점 개수</dt><dd id="s-n">0</dd>
+        <dt>길이</dt><dd id="s-len">0 m</dd>
+        <dt>피트 지점</dt><dd id="s-pit">없음 (자동)</dd>
+      </dl>
+    </section>
+
+    <section id="slope-sec" hidden>
+      <h2>보조 표시</h2>
+      <div class="row"><label><input type="checkbox" id="slope-on" checked> DTM·DSM 경사도 (주황·빨강 = 40° 이상 급경사, 암사면)</label></div>
+      <div class="row"><span>투명도</span><input type="range" id="slope-op" min="10" max="100" value="55"></div>
+    </section>
+
+    <section>
+      <h2>저장</h2>
+      <div class="hint">저장 폴더 (분석할 현장 자료 폴더)</div>
+      <div class="row"><input type="text" id="out"></div>
+      <button class="btn primary" id="save">wall_line.csv 저장</button>
+      <div id="msg"></div>
+    </section>
+  </aside>
+  <div id="map"></div>
+</div>
+<div id="status" hidden></div>
+<script>
+const $ = id => document.getElementById(id);
+const params = new URLSearchParams(location.search);
+const ORTHO = params.get('ortho') || '';
+$('out').value = params.get('out') || '';
+
+const map = L.map('map', {zoomControl: true, maxZoom: 24, doubleClickZoom: false});
+L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+            {maxZoom: 24, maxNativeZoom: 19, attribution: 'Esri World Imagery'}).addTo(map);
+L.control.scale({imperial: false}).addTo(map);
+
+let mode = 'wall', wall = [], pit = null, slopeLayer = null;
+const line = L.polyline([], {color: '#e11d48', weight: 4, opacity: 0.95}).addTo(map);
+const frontLine = L.polyline([], {color: '#2563eb', weight: 2, dashArray: '6 6'}).addTo(map);
+let vertexMarkers = [], pitMarker = null;
+
+function setMode(m) {
+  mode = m;
+  for (const k of ['wall', 'pit', 'move']) $('m-' + k).classList.toggle('on', k === m);
+  $('map').classList.toggle('move', m === 'move');
+}
+['wall', 'pit', 'move'].forEach(k => $('m-' + k).onclick = () => setMode(k));
+
+function length() {
+  let s = 0;
+  for (let i = 1; i < wall.length; i++) s += map.distance(wall[i - 1], wall[i]);
+  return s;
+}
+
+function redraw() {
+  line.setLatLngs(wall);
+  vertexMarkers.forEach(m => m.remove());
+  vertexMarkers = wall.map((ll, i) => {
+    const m = L.marker(ll, {draggable: true, icon: L.divIcon({className: '', html: `<div class="vtx">${i + 1}</div>`,
+                                                                iconSize: [22, 22], iconAnchor: [11, 11]})}).addTo(map);
+    m.on('drag', e => { wall[i] = e.target.getLatLng(); line.setLatLngs(wall); updateStats(); });
+    m.on('dragend', redraw);
+    m.on('contextmenu', e => { L.DomEvent.preventDefault(e); wall.splice(i, 1); redraw(); });
+    return m;
+  });
+  if (pitMarker) pitMarker.remove();
+  pitMarker = null;
+  if (pit) {
+    pitMarker = L.marker(pit, {draggable: true, icon: L.divIcon({className: '', html: '<div class="pit">P</div>',
+                                                                  iconSize: [20, 20], iconAnchor: [10, 10]})}).addTo(map);
+    pitMarker.on('drag', e => { pit = e.target.getLatLng(); updateFront(); });
+    pitMarker.on('contextmenu', e => { L.DomEvent.preventDefault(e); pit = null; redraw(); });
+  }
+  updateFront();
+  updateStats();
+}
+
+function updateFront() {
+  if (!pit || wall.length < 2) { frontLine.setLatLngs([]); return; }
+  const a = wall[Math.floor((wall.length - 1) / 2)], b = wall[Math.floor((wall.length - 1) / 2) + 1];
+  frontLine.setLatLngs([[(a.lat + b.lat) / 2, (a.lng + b.lng) / 2], pit]);
+}
+
+function updateStats() {
+  $('s-n').textContent = wall.length;
+  $('s-len').textContent = `${length().toFixed(1)} m`;
+  $('s-pit').textContent = pit ? '지정됨' : '없음 (저장 시 DTM 자동)';
+}
+
+// insert a vertex where the line is clicked
+line.on('click', e => {
+  if (mode !== 'wall') return;
+  L.DomEvent.stopPropagation(e);
+  const p = map.latLngToLayerPoint(e.latlng);
+  let best = 0, bd = Infinity;
+  for (let i = 1; i < wall.length; i++) {
+    const d = L.LineUtil.pointToSegmentDistance(p, map.latLngToLayerPoint(wall[i - 1]), map.latLngToLayerPoint(wall[i]));
+    if (d < bd) { bd = d; best = i; }
+  }
+  wall.splice(best, 0, e.latlng);
+  redraw();
+});
+
+map.on('click', e => {
+  if (mode === 'wall') { wall.push(e.latlng); redraw(); }
+  else if (mode === 'pit') { pit = e.latlng; redraw(); }
+});
+
+$('undo').onclick = () => { wall.pop(); redraw(); };
+$('clear').onclick = () => { if (confirm('그린 선과 피트 지점을 모두 지울까요?')) { wall = []; pit = null; redraw(); } };
+document.addEventListener('keydown', e => {
+  if (e.target.tagName === 'INPUT') return;
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') { wall.pop(); redraw(); e.preventDefault(); }
+  if (e.key === 'Escape') setMode('move');
+});
+
+function msg(text, cls) { $('msg').className = cls || ''; $('msg').innerHTML = text; }
+
+$('save').onclick = async () => {
+  if (wall.length < 2) return msg('벽면선을 2점 이상 찍어 주세요.', 'err');
+  const q = new URLSearchParams({ortho: ORTHO, out: $('out').value});
+  const r = await fetch('/api/save?' + q, {method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({wall: wall.map(p => [p.lat, p.lng]), pit: pit ? [pit.lat, pit.lng] : null, out: $('out').value})});
+  const j = await r.json();
+  if (!r.ok) return msg(j.error || '저장 실패', 'err');
+  if (j.pit_auto && j.pit) { pit = L.latLng(j.pit); redraw(); }
+  msg(`저장했습니다: ${j.path}<br>점 ${j.n}개, 길이 ${j.length_m} m`
+      + (j.pit_auto ? '<br>피트 지점은 DTM에서 낮은 쪽으로 자동 지정했습니다 (파란 P). 다르면 옮기고 다시 저장하세요.'
+                    : j.pit ? '' : '<br>피트 지점 없음 — 분석 때 벽 앞뒤 방향을 점 순서로 판단합니다.')
+      + '<br>분석 프로그램 화면을 새로 고치면 반영됩니다.', 'ok');
+};
+
+function status(text) { $('status').hidden = !text; $('status').textContent = text || ''; }
+
+async function init() {
+  const q = new URLSearchParams({ortho: ORTHO, out: $('out').value});
+  const r = await fetch('/api/info?' + q);
+  const info = await r.json();
+  if (!r.ok) { $('ortho-name').textContent = info.error; status(info.error); return; }
+  $('ortho-name').textContent = info.ortho + (info.reused ? ` (${info.reused})` : '');
+  if (info.status === 'building') { status(`정사영상 타일을 처음 한 번 만드는 중입니다 — ${info.log || ''}`); setTimeout(init, 4000); return; }
+  if (info.status === 'error') { status(info.log); return; }
+  status('');
+  const tq = '?ortho=' + encodeURIComponent(ORTHO);
+  L.tileLayer('/tiles/{z}/{x}/{y}.webp' + tq, {minZoom: 0, maxZoom: 24, maxNativeZoom: info.max_zoom,
+                                               minNativeZoom: info.min_zoom, bounds: info.bounds}).addTo(map);
+  if (info.dtm) {
+    const s = await fetch('/api/slope?' + q).then(r => r.json());
+    if (s.bounds) {
+      slopeLayer = L.imageOverlay('/slope.png?' + q, s.bounds, {opacity: 0.55}).addTo(map);
+      $('slope-sec').hidden = false;
+      $('slope-on').onchange = () => $('slope-on').checked ? slopeLayer.addTo(map) : slopeLayer.remove();
+      $('slope-op').oninput = () => slopeLayer.setOpacity($('slope-op').value / 100);
+    }
+  }
+  if (info.existing && info.existing.wall.length) {
+    wall = info.existing.wall.map(p => L.latLng(p));
+    pit = info.existing.pit ? L.latLng(info.existing.pit) : null;
+    redraw();
+    map.fitBounds(L.latLngBounds(wall).pad(0.4));
+    msg('기존 wall_line.csv를 불러왔습니다. 고친 뒤 다시 저장하면 덮어씁니다.');
+  } else {
+    map.fitBounds(info.bounds);
+  }
+  if (!info.out_exists) msg('저장 폴더가 없습니다. 아래에 분석할 현장 자료 폴더 경로를 넣어 주세요.', 'err');
+}
+map.setView([36.06, 127.035], 15);
+init();
+</script>
+</body>
+</html>

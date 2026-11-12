@@ -43,6 +43,49 @@ def _local_plane_coords(points: np.ndarray, centroid: np.ndarray, normal: np.nda
     return np.column_stack([centered @ u, centered @ v])
 
 
+def scanline_spacing(
+    centroids: np.ndarray, areas: np.ndarray, mean_normal: np.ndarray, coplanar_tolerance: float,
+    n_lines: int = 400, seed: int = 0,
+) -> tuple[float | None, float | None]:
+    """Normal spacing of a set from virtual scanlines (ISRM-style) parallel to the set normal.
+
+    Each patch is a disc of its own area around its centroid in the set's plane coordinates. A scanline
+    runs along the set normal through a point on a randomly chosen patch (chosen in proportion to area);
+    the patches whose discs it passes through are its intersections, and the gaps between consecutive
+    intersections (fragments closer than `coplanar_tolerance` merged) are the spacings. Unlike sorting
+    all centroids along the normal, patches that sit side by side on a long wall without overlapping do
+    not produce spurious small gaps. Returns (mean, std), or (None, None) when no line hits two patches.
+    """
+    if len(centroids) < 2:
+        return None, None
+    n = mean_normal / np.linalg.norm(mean_normal)
+    arbitrary = np.array([1.0, 0.0, 0.0]) if abs(n[0]) < 0.9 else np.array([0.0, 1.0, 0.0])
+    u = np.cross(n, arbitrary)
+    u /= np.linalg.norm(u)
+    v = np.cross(n, u)
+    plane = np.column_stack([centroids @ u, centroids @ v])
+    along = centroids @ n
+    radius = np.sqrt(np.maximum(np.asarray(areas, float), 1e-9) / np.pi)
+
+    rng = np.random.default_rng(seed)
+    pick = rng.choice(len(centroids), size=n_lines, p=radius**2 / np.sum(radius**2))
+    ang = rng.uniform(0, 2 * np.pi, n_lines)
+    rad = radius[pick] * np.sqrt(rng.uniform(0, 1, n_lines))
+    lines = plane[pick] + np.column_stack([np.cos(ang), np.sin(ang)]) * rad[:, None]
+
+    gaps = []
+    for q in lines:
+        hit = np.linalg.norm(plane - q, axis=1) < radius
+        if hit.sum() < 2:
+            continue
+        g = np.diff(np.sort(along[hit]))
+        gaps.append(g[g > coplanar_tolerance])
+    gaps = np.concatenate(gaps) if gaps else np.empty(0)
+    if len(gaps) == 0:
+        return None, None
+    return float(gaps.mean()), float(gaps.std())
+
+
 def persistence(points: np.ndarray, centroid: np.ndarray, normal: np.ndarray) -> tuple[float, float]:
     """Return (max_chord_length, convex_hull_area) of the patch projected onto its own plane."""
     uv = _local_plane_coords(points, centroid, normal)

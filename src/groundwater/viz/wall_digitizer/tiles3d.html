@@ -1,0 +1,434 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>타일 모델 가상 시공</title>
+<script src="https://cdn.jsdelivr.net/npm/cesium@1.120.0/Build/Cesium/Cesium.js"></script>
+<link href="https://cdn.jsdelivr.net/npm/cesium@1.120.0/Build/Cesium/Widgets/widgets.css" rel="stylesheet">
+<style>
+  :root { --bg: #e5e7eb; --panel: rgba(255,255,255,.94); --ink: #111827; --muted: #4b5563; --line: #d1d5db; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--ink);
+               font: 13px/1.45 "Malgun Gothic", "Apple SD Gothic Neo", system-ui, sans-serif; }
+  #view { position: absolute; inset: 0; }
+  #panel { position: absolute; top: 10px; left: 10px; width: 300px; max-height: calc(100% - 20px); overflow: auto;
+           background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px;
+           box-shadow: 0 2px 10px rgba(0,0,0,.15); }
+  h1 { font-size: 14px; margin: 0 0 4px; }
+  h2 { font-size: 12px; margin: 12px 0 4px; color: var(--muted); text-transform: none; }
+  .row { display: flex; align-items: center; gap: 6px; margin: 3px 0; }
+  .row input[type=range] { flex: 1; }
+  .row output { width: 42px; text-align: right; font-variant-numeric: tabular-nums; }
+  .sw { width: 12px; height: 12px; border-radius: 2px; flex: none; border: 1px solid rgba(0,0,0,.2); }
+  .note { color: var(--muted); font-size: 12px; }
+  #status { margin-top: 6px; color: var(--muted); }
+  #pick { margin-top: 6px; padding: 6px; background: #fef9c3; border-radius: 4px; display: none; }
+  #err { color: #b91c1c; }
+  label { cursor: pointer; }
+</style>
+</head>
+<body>
+<div id="view"></div>
+<div id="panel">
+  <h1 id="title">타일 모델 가상 시공</h1>
+  <div class="note" id="intro">실사 텍스처 타일 모델 위의 그라우팅 공과 벽면 안쪽 절리면. 드래그 회전, 휠 확대, 오른쪽 드래그 이동.</div>
+  <div id="coverage" class="note"></div>
+  <h2>표면</h2>
+  <div class="row">선명도<input id="sse" type="range" min="1" max="32" step="1" value="6"><output id="sse_o">6</output></div>
+  <div class="row">불투명도<input id="alpha" type="range" min="0.1" max="1" step="0.05" value="1"><output id="alpha_o">1</output></div>
+  <div id="skybox" style="display:none">
+  <div class="row"><label><input id="sky" type="checkbox" checked> 하늘 노이즈 숨기기 (이 표고 위 안 그림)</label></div>
+  <div class="row">표고<input id="skyh" type="range" step="1"><output id="skyh_o"></output></div>
+  </div>
+  <div id="cutbox">
+  <div class="row"><label><input id="cut" type="checkbox"> 측점 구간 표면 잘라내기</label></div>
+  <div class="row">시작<input id="cut0" type="range" step="0.5"><output id="cut0_o"></output></div>
+  <div class="row">끝<input id="cut1" type="range" step="0.5"><output id="cut1_o"></output></div>
+  </div>
+  <div class="row" id="labelrow" style="display:none"><label><input id="show_labels" type="checkbox" checked> 구간 이름</label></div>
+  <h2>시점</h2>
+  <div class="row"><label><input id="ball" type="checkbox"> 회전 중심 고정 (트랙볼)</label></div>
+  <div class="note">트랙볼: 왼쪽 드래그 = 회전 중심 둘레로 회전, 휠 = 중심 쪽 확대. <b>더블클릭</b> = 그 점을 회전 중심으로,
+    <b>Space</b> = 모델 중심으로, <b>Home</b> = 처음 시점.</div>
+  <div class="row"><button id="tocentre" type="button">모델 중심으로</button> <button id="tostart" type="button">처음 시점</button>
+    <button id="snap" type="button" title="지금 화면(3D 부분)을 PNG로 장면 파일 옆 '3D화면저장' 폴더에 저장">화면 저장 (PNG)</button></div>
+  <div class="note" id="snapmsg"></div>
+  <div id="holebox">
+  <h2>그라우팅 공</h2>
+  <div class="row"><label><input id="show_holes" type="checkbox" checked> 공 (암반 속은 점선)</label></div>
+  <div class="row"><label><input id="show_hits" type="checkbox" checked> 공이 절리를 지나는 점</label></div>
+  <div class="row"><label><input id="show_missed" type="checkbox" checked> 공이 닿지 않는 유출 '상' 절리</label></div>
+  </div>
+  <div id="ovbox" style="display:none">
+  <h2>표면에 붙인 이미지</h2>
+  <div class="row">불투명도<input id="oalpha" type="range" min="0" max="1" step="0.05" value="0.8"><output id="oalpha_o">0.8</output></div>
+  <div id="ovlist"></div>
+  <div class="row"><button id="ovgo" type="button">이미지 위치로 이동</button></div>
+  </div>
+  <h2>표면 절리 (트레이스)</h2>
+  <div class="row"><label><input id="show_traces" type="checkbox" checked> 매핑된 트레이스 <span class="sw" style="background:#22d3ee;display:inline-block"></span> (굵게: 유출 '상' 칸)</label></div>
+  <div id="linebox" style="display:none"><h2>선</h2><div id="linelist"></div></div>
+  <h2>절리면</h2>
+  <div class="row">불투명도<input id="jalpha" type="range" min="0.1" max="1" step="0.05" value="0.6"><output id="jalpha_o">0.6</output></div>
+  <div id="groups"></div>
+  <div id="pick"></div>
+  <div id="status">불러오는 중…</div>
+  <div id="err"></div>
+</div>
+<script>
+const $ = (id) => document.getElementById(id);
+const params = new URLSearchParams(location.search);
+const C = Cesium;
+
+function cart(a, i = 0) { return new C.Cartesian3(a[i], a[i + 1], a[i + 2]); }
+function ring(flat) { const out = []; for (let i = 0; i < flat.length; i += 3) out.push(cart(flat, i)); return out; }
+
+async function main() {
+  const res = await fetch("/api/tiles3d/scene?scene=" + encodeURIComponent(params.get("scene") || ""));
+  const S = await res.json();
+  if (S.error) { $("err").textContent = S.error; $("status").textContent = ""; return; }
+  if (S.title) { $("title").textContent = S.title; document.title = S.title; }
+  if (S.intro) $("intro").textContent = S.intro;
+  if (S.model_alpha) { $("alpha").value = S.model_alpha; $("alpha_o").textContent = S.model_alpha; }
+  if (!S.holes.length) $("holebox").style.display = "none";
+  if (S.coverage) $("coverage").innerHTML =
+    `유출 '상' 칸의 관측 절리 <b>${S.coverage.high}개 중 ${S.coverage.high_hit}개</b>를 공이 지납니다.`;
+
+  const viewer = new C.Viewer("view", {
+    baseLayer: false, baseLayerPicker: false, geocoder: false, homeButton: false, sceneModePicker: false,
+    navigationHelpButton: false, animation: false, timeline: false, fullscreenButton: false, infoBox: false,
+    selectionIndicator: false, skyBox: false, skyAtmosphere: false, msaaSamples: 4,
+    contextOptions: { webgl: { preserveDrawingBuffer: true } },      // the canvas can be saved as a picture
+  });
+  const scene = viewer.scene;
+  window.viewer = viewer;                      // for the browser console
+  scene.globe.show = false;
+  scene.backgroundColor = C.Color.fromCssColorString("#e5e7eb");
+  scene.screenSpaceCameraController.enableCollisionDetection = false;
+
+  // photogrammetry textures already carry the light: draw them unlit, with an adjustable alpha
+  const mkShader = (translucent) => new C.CustomShader({
+    lightingModel: C.LightingModel.UNLIT,
+    translucencyMode: translucent ? C.CustomShaderTranslucencyMode.TRANSLUCENT : C.CustomShaderTranslucencyMode.OPAQUE,
+    uniforms: { u_alpha: { type: C.UniformType.FLOAT, value: 1.0 }, u_sky: { type: C.UniformType.FLOAT, value: 0.0 },
+                u_ref: { type: C.UniformType.VEC3, value: new C.Cartesian3() }, u_up: { type: C.UniformType.VEC3, value: new C.Cartesian3(0, 0, 1) } },   // (not the frozen UNIT_Z: setUniform copies into it)
+    // sky cut: nothing above the plane through u_ref normal to u_up (floating noise of the model)
+    fragmentShaderText: "void fragmentMain(FragmentInput fsInput, inout czm_modelMaterial material) {" +
+      // in eye coordinates (positionWC of these tiles is not plain ECEF; ~1 m precision is plenty here)
+      " if (u_sky > 0.5) { vec3 r = (czm_view * vec4(u_ref, 1.0)).xyz; vec3 n = (czm_view * vec4(u_up, 0.0)).xyz;" +
+      "   if (dot(fsInput.attributes.positionEC - r, n) > 0.0) discard; }" +
+      " material.alpha = u_alpha; }",
+  });
+  const shaders = { opaque: mkShader(false), translucent: mkShader(true) };
+  const tileset = await C.Cesium3DTileset.fromUrl(S.tileset_url, { maximumScreenSpaceError: 6, customShader: shaders.opaque });
+  scene.primitives.add(tileset);
+
+  // camera in front of the wall
+  const eye = cart(S.camera.eye), target = cart(S.camera.target);
+  const dir = C.Cartesian3.normalize(C.Cartesian3.subtract(target, eye, new C.Cartesian3()), new C.Cartesian3());
+  const upG = C.Cartesian3.normalize(eye, new C.Cartesian3());
+  const right = C.Cartesian3.normalize(C.Cartesian3.cross(dir, upG, new C.Cartesian3()), new C.Cartesian3());
+  const up = C.Cartesian3.cross(right, dir, new C.Cartesian3());
+  viewer.camera.setView({ destination: eye, orientation: { direction: dir, up: up } });
+
+  // --- holes ---
+  const holeEntities = [], hitPoints = scene.primitives.add(new C.PointPrimitiveCollection());
+  S.holes.forEach((h, i) => {
+    const e = viewer.entities.add({
+      name: h.label,
+      polyline: { positions: [cart(h.a), cart(h.b)], width: 4, material: C.Color.fromCssColorString("#7f1d1d"),
+                  depthFailMaterial: new C.PolylineDashMaterialProperty({ color: C.Color.fromCssColorString("#f97316"), dashLength: 12 }) },
+      position: cart(h.a),
+      point: { pixelSize: 9, color: C.Color.fromCssColorString("#fde047"), outlineColor: C.Color.BLACK, outlineWidth: 1,
+               disableDepthTestDistance: Number.POSITIVE_INFINITY },
+    });
+    holeEntities.push(e);
+    if (h.out) holeEntities.push(viewer.entities.add({ name: h.label + " — 암반 밖으로 나감", position: cart(h.out),
+      point: { pixelSize: 11, color: C.Color.RED, disableDepthTestDistance: Number.POSITIVE_INFINITY } }));
+    if (h.hits) ring(h.hits).forEach(p => hitPoints.add({ position: p, pixelSize: 6, color: C.Color.WHITE,
+      outlineColor: C.Color.BLACK, outlineWidth: 1, disableDepthTestDistance: Number.POSITIVE_INFINITY }));
+  });
+  const missed = S.missed.map(r => viewer.entities.add({ polyline: { positions: ring(r), width: 2,
+    material: C.Color.fromCssColorString("#dc2626"),
+    depthFailMaterial: new C.PolylineDashMaterialProperty({ color: C.Color.fromCssColorString("#dc2626").withAlpha(0.7) }) } }));
+
+  // --- reference images (e.g. a petroglyph tracing) draped on the surface ---
+  const ovPrims = [];
+  (S.overlays || []).forEach((o, k) => {
+    const pos = new Float64Array(o.positions);
+    const geom = new C.Geometry({
+      attributes: {
+        position: new C.GeometryAttribute({ componentDatatype: C.ComponentDatatype.DOUBLE, componentsPerAttribute: 3, values: pos }),
+        st: new C.GeometryAttribute({ componentDatatype: C.ComponentDatatype.FLOAT, componentsPerAttribute: 2, values: new Float32Array(o.st) }),
+      },
+      indices: new Uint32Array(o.indices), primitiveType: C.PrimitiveType.TRIANGLES,
+      boundingSphere: C.BoundingSphere.fromVertices(Array.from(pos)),
+    });
+    C.GeometryPipeline.computeNormal(geom);
+    const mat = C.Material.fromType("Image", { image: o.image, color: new C.Color(1, 1, 1, +$("oalpha").value) });
+    const prim = scene.primitives.add(new C.Primitive({ geometryInstances: new C.GeometryInstance({ geometry: geom }),
+      appearance: new C.MaterialAppearance({ material: mat, translucent: true, flat: true, faceForward: true, closed: false }),
+      asynchronous: false }));
+    prim.show = o.show !== undefined ? !!o.show : k === 0;
+    ovPrims.push({ prim, mat, sphere: geom.boundingSphere, eye: o.eye, target: o.target });
+    const row = document.createElement("div");
+    row.className = "row";
+    // colour key of the image (failure mode, seepage class, joint sets), when the overlay names its colours
+    const sw = (o.colors || []).map(c => `<span class="sw" style="background:${c};display:inline-block;vertical-align:-1px;margin-left:4px"></span>`).join("");
+    row.innerHTML = `<label><input type="checkbox" ${prim.show ? "checked" : ""}> ${o.name}${sw}</label>`;
+    row.querySelector("input").onchange = (ev) => { prim.show = ev.target.checked; };
+    $("ovlist").appendChild(row);
+  });
+  if (ovPrims.length) {
+    $("ovbox").style.display = "block";
+    $("oalpha").oninput = () => { $("oalpha_o").textContent = $("oalpha").value;
+      ovPrims.forEach(o => { o.mat.uniforms.color = new C.Color(1, 1, 1, +$("oalpha").value); }); };
+    $("ovgo").onclick = () => {
+      if (window.__releaseBall) window.__releaseBall();
+      const o = ovPrims.find(x => x.prim.show) || ovPrims[0];
+      if (!o.eye) { viewer.camera.flyToBoundingSphere(o.sphere, { duration: 1.2 }); return; }
+      const e = cart(o.eye), t = cart(o.target);
+      const d = C.Cartesian3.normalize(C.Cartesian3.subtract(t, e, new C.Cartesian3()), new C.Cartesian3());
+      const r = C.Cartesian3.normalize(C.Cartesian3.cross(d, C.Cartesian3.normalize(e, new C.Cartesian3()), new C.Cartesian3()), new C.Cartesian3());
+      viewer.camera.flyTo({ destination: e, orientation: { direction: d, up: C.Cartesian3.cross(r, d, new C.Cartesian3()) }, duration: 1.2 });
+    };
+  }
+
+  // --- mapped traces on the face (drawn over the surface so their match with the texture can be judged) ---
+  const traceLines = scene.primitives.add(new C.PolylineCollection());
+  (S.traces || []).forEach(t => traceLines.add({ positions: ring(t.p), width: t.high ? 4 : 2,
+    material: C.Material.fromType("Color", { color: C.Color.fromCssColorString(t.high ? "#22d3ee" : "#a5f3fc").withAlpha(t.high ? 1 : 0.8) }) }));
+  $("show_traces").onchange = (e) => { traceLines.show = e.target.checked; };
+
+  // --- joint planes: one primitive per group, rebuilt when the opacity changes ---
+  const groupPrims = S.joint_groups.map(() => null);
+  const shown = S.joint_groups.map(g => g.kind === "obs");
+  function buildGroup(k) {
+    if (groupPrims[k]) { scene.primitives.remove(groupPrims[k]); groupPrims[k] = null; }
+    if (!shown[k]) return;
+    const g = S.joint_groups[k], a = +$("jalpha").value;
+    const inst = [];
+    g.polys.forEach((flat, i) => {
+      if (flat.length < 9) return;
+      inst.push(new C.GeometryInstance({
+        geometry: C.CoplanarPolygonGeometry.fromPositions({ positions: ring(flat), vertexFormat: C.PerInstanceColorAppearance.FLAT_VERTEX_FORMAT }),
+        attributes: { color: C.ColorGeometryInstanceAttribute.fromColor(C.Color.fromCssColorString(g.colours[i]).withAlpha(a)) },
+      }));
+    });
+    groupPrims[k] = scene.primitives.add(new C.Primitive({ geometryInstances: inst, asynchronous: true,
+      appearance: new C.PerInstanceColorAppearance({ flat: true, translucent: a < 1, closed: false }) }));
+  }
+  const gdiv = $("groups");
+  S.joint_groups.forEach((g, k) => {
+    const row = document.createElement("div");
+    row.className = "row";
+    row.innerHTML = `<label><input type="checkbox" ${shown[k] ? "checked" : ""}> <span class="sw" style="background:${g.colour};display:inline-block;vertical-align:-1px"></span> ${g.label} (${g.polys.length})</label>`;
+    row.querySelector("input").onchange = (ev) => { shown[k] = ev.target.checked; buildGroup(k); };
+    gdiv.appendChild(row);
+    buildGroup(k);
+  });
+
+  // --- meshes (e.g. joint discs continued underground: triangles kept below the ground), translucent ---
+  const meshPrims = (S.mesh_groups || []).map(() => null);
+  const meshShown = (S.mesh_groups || []).map(g => g.show !== false);
+  function buildMesh(k) {
+    if (meshPrims[k]) { scene.primitives.remove(meshPrims[k]); meshPrims[k] = null; }
+    if (!meshShown[k]) return;
+    const g = S.mesh_groups[k], pos = new Float64Array(g.positions);
+    const geom = new C.Geometry({
+      attributes: { position: new C.GeometryAttribute({ componentDatatype: C.ComponentDatatype.DOUBLE,
+                                                        componentsPerAttribute: 3, values: pos }) },
+      indices: new Uint32Array(g.indices), primitiveType: C.PrimitiveType.TRIANGLES,
+      boundingSphere: C.BoundingSphere.fromVertices(Array.from(pos)),
+    });
+    const a = Math.min(1, +$("jalpha").value * (g.alpha || 1) / 0.6);
+    meshPrims[k] = scene.primitives.add(new C.Primitive({ asynchronous: false,
+      geometryInstances: new C.GeometryInstance({ geometry: geom,
+        attributes: { color: C.ColorGeometryInstanceAttribute.fromColor(C.Color.fromCssColorString(g.colour).withAlpha(a)) } }),
+      appearance: new C.PerInstanceColorAppearance({ flat: true, translucent: true, closed: false }) }));
+  }
+  (S.mesh_groups || []).forEach((g, k) => {
+    const row = document.createElement("div");
+    row.className = "row";
+    row.innerHTML = `<label><input type="checkbox" ${meshShown[k] ? "checked" : ""}> <span class="sw" style="background:${g.colour};opacity:.5;display:inline-block;vertical-align:-1px"></span> ${g.label}</label>`;
+    row.querySelector("input").onchange = (ev) => { meshShown[k] = ev.target.checked; buildMesh(k); };
+    gdiv.appendChild(row);
+    buildMesh(k);
+  });
+
+  // --- coloured lines (outlines, traces of planes on the ground), solid or dashed, one collection per group ---
+  (S.line_groups || []).forEach((g) => {
+    const col = C.Color.fromCssColorString(g.colour);
+    const coll = scene.primitives.add(new C.PolylineCollection());
+    g.lines.forEach(flat => { if (flat.length >= 6) coll.add({ positions: ring(flat), width: g.width || 2,
+      material: g.dash ? C.Material.fromType("PolylineDash", { color: col, dashLength: 16 })
+                       : C.Material.fromType("Color", { color: col }) }); });
+    coll.show = g.show !== false;
+    const row = document.createElement("div");
+    row.className = "row";
+    const sw = g.dash ? `border-top:2px dashed ${g.colour};height:0;width:14px` : `background:${g.colour};height:3px;width:14px`;
+    row.innerHTML = `<label><input type="checkbox" ${coll.show ? "checked" : ""}> <span style="${sw};display:inline-block;vertical-align:3px"></span> ${g.label} (${g.lines.length})</label>`;
+    row.querySelector("input").onchange = (ev) => { coll.show = ev.target.checked; };
+    $("linelist").appendChild(row);
+    $("linebox").style.display = "block";
+  });
+
+  // --- controls ---
+  const bind = (id, fn) => { const el = $(id); const o = $(id + "_o"); const f = () => { if (o) o.textContent = el.value; fn(+el.value); }; el.oninput = f; f(); };
+  bind("sse", v => { tileset.maximumScreenSpaceError = v; });
+  bind("alpha", v => {
+    const want = v < 0.999 ? shaders.translucent : shaders.opaque;
+    if (tileset.customShader !== want) tileset.customShader = want;
+    want.setUniform("u_alpha", v);
+  });
+  let jt = null;
+  $("jalpha").oninput = () => { $("jalpha_o").textContent = $("jalpha").value; clearTimeout(jt);
+    jt = setTimeout(() => { S.joint_groups.forEach((_, k) => buildGroup(k)); meshPrims.forEach((_, k) => buildMesh(k)); }, 250); };
+  $("show_holes").onchange = (e) => holeEntities.forEach(x => x.show = e.target.checked);
+  $("show_hits").onchange = (e) => { hitPoints.show = e.target.checked; };
+  $("show_missed").onchange = (e) => missed.forEach(x => x.show = e.target.checked);
+
+  // sky cut: nothing of the model above a horizontal plane over the highest real surface (floating noise) -- in the
+  // model's shader, so the surface cut-away keeps the clipping planes to itself
+  function applySky() {
+    if (!S.sky) return;
+    $("skyh_o").textContent = $("skyh").value + " m";
+    const up = cart(S.sky.up), p = C.Cartesian3.add(cart(S.sky.p),
+      C.Cartesian3.multiplyByScalar(up, +$("skyh").value - S.sky.h, new C.Cartesian3()), new C.Cartesian3());
+    for (const sh of [shaders.opaque, shaders.translucent]) {
+      sh.setUniform("u_sky", $("sky").checked ? 1.0 : 0.0); sh.setUniform("u_ref", p); sh.setUniform("u_up", up);
+    }
+  }
+  if (S.sky) {
+    $("skybox").style.display = "block";
+    $("skyh").min = S.sky.min; $("skyh").max = S.sky.max; $("skyh").value = S.sky.h;
+    $("sky").onchange = applySky; $("skyh").oninput = applySky;
+  }
+  applySky();
+
+  // section names (site-wide scene)
+  const labelEnts = (S.labels || []).map(l => viewer.entities.add({ position: cart(l.p),
+    label: { text: l.text, font: "bold 20px Malgun Gothic, sans-serif", fillColor: C.Color.WHITE, outlineColor: C.Color.BLACK,
+             outlineWidth: 4, style: C.LabelStyle.FILL_AND_OUTLINE, disableDepthTestDistance: Number.POSITIVE_INFINITY } }));
+  if (labelEnts.length) { $("labelrow").style.display = "flex"; $("show_labels").onchange = (e) => labelEnts.forEach(x => x.show = e.target.checked); }
+
+  // cut-away: the surface between two chainages is clipped (two vertical planes across the wall); a scene of a
+  // whole site (several walls) has no single wall line
+  if (!S.wall) { $("cutbox").style.display = "none"; }
+  else {
+  const U = S.wall.u, W = ring(S.wall.p);
+  const wallAt = (u) => { let i = Math.max(0, Math.min(U.length - 2, Math.floor(u - U[0])));
+    const f = Math.max(0, Math.min(1, (u - U[i]) / (U[i + 1] - U[i])));
+    return C.Cartesian3.lerp(W[i], W[i + 1], f, new C.Cartesian3()); };
+  for (const id of ["cut0", "cut1"]) { $(id).min = U[0]; $(id).max = U[U.length - 1]; }
+  const um = 0.5 * (U[0] + U[U.length - 1]), span = U[U.length - 1] - U[0];
+  $("cut0").value = (um - 0.12 * span).toFixed(1); $("cut1").value = (um + 0.12 * span).toFixed(1);
+  function applyCut() {
+    $("cut0_o").textContent = (+$("cut0").value).toFixed(1); $("cut1_o").textContent = (+$("cut1").value).toFixed(1);
+    if (!$("cut").checked) { tileset.clippingPlanes = undefined; return; }
+    const u0 = Math.min(+$("cut0").value, +$("cut1").value), u1 = Math.max(+$("cut0").value, +$("cut1").value);
+    const p0 = wallAt(u0), p1 = wallAt(u1);
+    const chord = C.Cartesian3.normalize(C.Cartesian3.subtract(p1, p0, new C.Cartesian3()), new C.Cartesian3());
+    const tAt = (u) => { if (!S.wall.t) return chord;
+      const i = Math.max(0, Math.min(U.length - 1, Math.round(u - U[0]))); return cart(S.wall.t, 3 * i); };
+    const t0 = tAt(u0), t1 = tAt(u1);
+    const inv = C.Matrix4.inverse(tileset.clippingPlanesOriginMatrix, new C.Matrix4());
+    const mk = (n, p) => { const pl = C.Plane.fromPointNormal(p, n); const loc = C.Plane.transform(pl, inv, new C.Plane(C.Cartesian3.UNIT_X, 0));
+      return new C.ClippingPlane(loc.normal, loc.distance); };
+    const planes = [mk(C.Cartesian3.negate(t0, new C.Cartesian3()), p0), mk(t1, p1)];
+    tileset.clippingPlanes = new C.ClippingPlaneCollection({ planes, unionClippingRegions: false, edgeWidth: 1.5, edgeColor: C.Color.WHITE });
+  }
+  for (const id of ["cut", "cut0", "cut1"]) $(id).oninput = applyCut;
+  $("cut").onchange = applyCut;
+  applyCut();
+  }
+
+  // click: what is it
+  new C.ScreenSpaceEventHandler(scene.canvas).setInputAction((ev) => {
+    const p = scene.pick(ev.position);
+    const name = p && p.id && p.id.name;
+    $("pick").style.display = name ? "block" : "none";
+    $("pick").textContent = name || "";
+  }, C.ScreenSpaceEventType.LEFT_CLICK);
+
+  // --- view: back to the model centre, the start view, a trackball about a fixed centre ---
+  // (the globe is hidden, so Cesium's own rotation picks its pivot on the ellipsoid below the model: after some
+  // panning that pivot is far from the model and the view swings; the trackball turns about a point on it)
+  const cam = viewer.camera;
+  const range0 = C.Cartesian3.distance(eye, target);
+  let orbit = C.Cartesian3.clone(target);
+  const mark = viewer.entities.add({ position: new C.CallbackProperty(() => orbit, false), show: false,
+    point: { pixelSize: 13, color: C.Color.ORANGE, outlineColor: C.Color.BLACK, outlineWidth: 2,
+             disableDepthTestDistance: Number.POSITIVE_INFINITY } });
+  let markTimer = null;
+  const flash = () => { mark.show = true; clearTimeout(markTimer); if (!$("ball").checked) markTimer = setTimeout(() => { mark.show = false; }, 1500); };
+  const free = () => cam.lookAtTransform(C.Matrix4.IDENTITY);
+  function lookAtOrbit(range) {
+    const r = range || C.Cartesian3.distance(cam.positionWC, orbit);
+    const h = cam.heading, pt = cam.pitch;
+    free();
+    cam.lookAt(orbit, new C.HeadingPitchRange(h, pt, r));
+  }
+  function ballChanged() {
+    if ($("ball").checked) { lookAtOrbit(); mark.show = true; } else { free(); mark.show = false; }
+  }
+  window.__releaseBall = () => { if ($("ball").checked) { $("ball").checked = false; ballChanged(); } };
+  $("ball").onchange = ballChanged;
+  function toCentre() {                        // keep the viewing direction, bring the model back to the middle
+    orbit = C.Cartesian3.clone(target);
+    if ($("ball").checked) { lookAtOrbit(range0); flash(); return; }
+    const d = C.Cartesian3.clone(cam.directionWC), u = C.Cartesian3.clone(cam.upWC);
+    free();
+    const dest = C.Cartesian3.subtract(orbit, C.Cartesian3.multiplyByScalar(d, range0, new C.Cartesian3()), new C.Cartesian3());
+    cam.flyTo({ destination: dest, orientation: { direction: d, up: u }, duration: 0.6 });
+    flash();
+  }
+  function toStart() {
+    orbit = C.Cartesian3.clone(target);
+    free();
+    startView();
+    if ($("ball").checked) lookAtOrbit();
+    flash();
+  }
+  const startView = () => cam.setView({ destination: eye, orientation: { direction: dir, up: up } });
+  $("tocentre").onclick = toCentre;
+  // save the 3D view (the canvas, without this panel) as PNG beside the scene file
+  window.saveView = async (name) => {
+    scene.render();
+    const png = viewer.canvas.toDataURL("image/png");
+    const r = await fetch("/api/tiles3d/snapshot", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ scene: params.get("scene") || "", png, name: name || "" }) });
+    const j = await r.json();
+    $("snapmsg").textContent = j.path ? "저장: " + j.path : (j.error || "저장 실패");
+    return j;
+  };
+  $("snap").onclick = () => window.saveView();
+  $("tostart").onclick = toStart;
+  // double click: that point of the model becomes the rotation centre and comes to the middle of the view
+  viewer.cesiumWidget.screenSpaceEventHandler.removeInputAction(C.ScreenSpaceEventType.LEFT_DOUBLE_CLICK);
+  new C.ScreenSpaceEventHandler(scene.canvas).setInputAction((ev) => {
+    const p = scene.pickPositionSupported ? scene.pickPosition(ev.position) : undefined;
+    if (!C.defined(p)) return;
+    orbit = p;
+    if ($("ball").checked) { lookAtOrbit(); flash(); return; }
+    const d = C.Cartesian3.clone(cam.directionWC), u = C.Cartesian3.clone(cam.upWC);
+    const dist = C.Cartesian3.distance(cam.positionWC, p);
+    free();
+    const dest = C.Cartesian3.subtract(p, C.Cartesian3.multiplyByScalar(d, dist, new C.Cartesian3()), new C.Cartesian3());
+    cam.flyTo({ destination: dest, orientation: { direction: d, up: u }, duration: 0.6 });
+    flash();
+  }, C.ScreenSpaceEventType.LEFT_DOUBLE_CLICK);
+  document.addEventListener("keydown", (e) => {
+    if (e.target && (e.target.tagName === "INPUT" || e.target.tagName === "BUTTON")) return;
+    if (e.code === "Space" || e.key === "c" || e.key === "C") { e.preventDefault(); toCentre(); }
+    else if (e.key === "Home" || e.key === "r" || e.key === "R") { e.preventDefault(); toStart(); }
+  });
+
+  let loading = 0;
+  tileset.loadProgress.addEventListener((pending, processing) => { loading = pending + processing; });
+  setInterval(() => { $("status").textContent = loading ? `타일 불러오는 중 (${loading})` : "준비됨"; }, 500);
+}
+main().catch(e => { $("err").textContent = String(e); console.error(e); });
+</script>
+</body>
+</html>

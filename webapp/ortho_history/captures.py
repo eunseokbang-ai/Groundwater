@@ -2,18 +2,19 @@
 
 The captures come from the NGII aerial-photo viewer (국토정보플랫폼): single, unrectified photos that
 the viewer places only roughly, so every capture has its own scale, rotation and offset. They also
-carry the viewer's photo-centre icons, drawn at the same screen position in every capture.
+carry the viewer's photo-centre icons and their year labels.
 
 Registration (one 6-parameter affine per capture, capture pixel -> EPSG:5186):
-  1. mask the icons: pixels that are identical in most captures;
+  1. mask the icons (found by their flat blue/red colour) and the labels under them;
   2. match directly against the orthophotos with LoFTR (a learned dense matcher, robust to the
      tonal and land-use change between decades), first coarse over the site, then at 1 m around
      the coarse footprint;
   3. captures that do not match the orthophotos are chained through captures already registered
      (e.g. 1973 via 1995), pooling every link;
   4. accept only with >= MIN_INLIERS RANSAC inliers spread over the image; a capture that overlaps
-     the others only in a corner gets a rough guess that is kept only if the orthophotos confirm
-     it (confidence "낮음"); the rest are reported as skipped rather than placed wrongly.
+     the others only in a corner gets a rough guess from its best partner (confidence "낮음", with
+     the disagreement between partners as its uncertainty); the rest are reported as skipped
+     rather than placed wrongly.
 
 A world file next to the capture (`1947.pgw`, EPSG:5186) overrides the automatic result, so a
 capture can be georeferenced by hand (e.g. in the QGIS Georeferencer) when matching fails.
@@ -28,27 +29,40 @@ from PIL import Image
 MIN_INLIERS = 20
 MIN_SPREAD = 0.15        # inlier convex hull / image area, for a full affine
 MIN_SPREAD_SIMILARITY = 0.03
-WEAK_MIN_INLIERS = 8     # rough first guess only; must then be confirmed against the orthophotos
+WEAK_MIN_INLIERS = 8     # rough first guess, to be confirmed against the orthophotos
+ROUGH_MIN_INLIERS = 30   # unconfirmed guess still shown as an approximate position
 RANSAC_M = 4.0           # RANSAC threshold on the ground, metres
 REF_RES = 1.0            # orthophoto reference resolution, metres
 COARSE_MAX_PX = 1100
+CHAIN_PARTNERS = 6       # registered captures (nearest in time) each chained capture is matched to
 
 
 def load_rgb(path: Path) -> np.ndarray:
     return np.asarray(Image.open(path).convert("RGB"))
 
 
-def overlay_mask(images: list) -> np.ndarray:
-    """Pixels that are identical in most captures: the viewer's icons and labels (grown slightly,
-    so the highlighted red variant of an icon is covered too)."""
-    shapes = {im.shape for im in images}
-    if len(images) < 5 or len(shapes) != 1:
-        return np.zeros(images[0].shape[:2], bool)
-    stack = np.stack(images).astype(np.int16)
-    med = np.median(stack, axis=0)
-    agree = (np.abs(stack - med).max(axis=3) <= 6).sum(axis=0)
-    mask = (agree >= 0.6 * len(images)).astype(np.uint8)
-    return cv2.dilate(mask, np.ones((5, 5), np.uint8), iterations=2) > 0
+ICON_COLORS = [(45, 96, 157), (237, 47, 19)]   # viewer photo-centre icon: normal blue, selected red
+
+
+def icon_mask(rgb: np.ndarray) -> np.ndarray:
+    """The viewer's photo-centre icons (flat blue or red squares) plus the year label under each.
+
+    Found by colour in each capture on its own, so captures of any window size work."""
+    px = rgb.astype(np.int16)
+    hit = np.zeros(rgb.shape[:2], bool)
+    for colour in ICON_COLORS:
+        hit |= (np.abs(px - colour) <= 28).all(axis=2)
+    n, _, stats, _ = cv2.connectedComponentsWithStats(hit.astype(np.uint8))
+    mask = np.zeros(rgb.shape[:2], np.uint8)
+    H, W = rgb.shape[:2]
+    for x, y, w, h, area in stats[1:]:
+        on_edge = x == 0 or y == 0 or x + w == W or y + h == H     # icon cut off by the window edge
+        if not ((100 if not on_edge else 20) <= area <= 2000 and w <= 45 and h <= 50
+                and (on_edge or (w >= 10 and h >= 10))):
+            continue
+        cx = x + w // 2                                  # label: ~46 px wide, centred, below the icon
+        mask[max(0, y - 8):y + h + 22, max(0, cx - 24):cx + 24] = 1
+    return mask > 0
 
 
 def clean_capture(rgb: np.ndarray, mask: np.ndarray) -> np.ndarray:
@@ -163,43 +177,51 @@ def _in_mask(mask, pts):
     return mask[pts[:, 1].astype(int).clip(0, h - 1), pts[:, 0].astype(int).clip(0, w - 1)]
 
 
-def register(captures: dict, mask: np.ndarray, refs: list, site_bounds, log=print) -> dict:
-    """captures: {year: gray array (icons already inpainted)}; mask: icon mask; refs: [Reference].
+def capture_year(cid: str) -> int:
+    return int(cid[:4])
 
-    Returns {year: {"transform": Affine, "inliers", "rms_m", "model", "method"}} for the captures
-    that registered; `method` says whether the final fit is tied to the orthophotos directly.
+
+def register(captures: dict, masks: dict, refs: list, site_bounds, fixed=None, log=print) -> dict:
+    """captures: {id: gray array (icons inpainted)}, ids like "1984" or "1984_2"; masks: {id: icon
+    mask}; refs: [Reference]; fixed: {id: Affine} captures registered earlier, kept as they are and
+    used only as chaining partners.
+
+    Returns {id: {"transform": Affine, "inliers", "rms_m", "model", "method", "confidence"}} for the
+    captures that registered; `method` says whether the final fit is tied to the orthophotos directly.
     """
     match = Matcher()
-    done = {}
+    done = {cid: {"transform": t} for cid, t in (fixed or {}).items()}
+    pair_cache = {}
 
     def footprint(t, shape, pad):
         h, w = shape
         fx, fy = _to_map(t, np.array([[0, 0], [w, 0], [w, h], [0, h]], float)).T
         return fx.min() - pad, fy.min() - pad, fx.max() + pad, fy.max() + pad
 
-    def direct(year, gray):
+    def direct(cid):
         """Coarse match of the raw capture against each orthophoto over the whole site."""
-        src, dst = [], []
+        gray, src, dst = captures[cid], [], []
         for ref in refs:
             win, wt = ref.window(site_bounds)
             p0, p1 = match(gray, win, 1.0, min(1.0, COARSE_MAX_PX / max(win.shape)))
-            keep = ~_in_mask(mask, p0)
+            keep = ~_in_mask(masks[cid], p0)
             src.append(p0[keep])
             dst.append(_to_map(wt, p1[keep]))
         return fit_model(np.vstack(src), np.vstack(dst), gray.shape)
 
-    def refine(year, gray, t):
+    def refine(cid, t):
         """Resample the capture to the map grid with the current estimate and match it against the
         orthophotos at 1 m: same scale and orientation, so this ties it to the orthophotos directly
         even where the raw capture would not match."""
+        gray = captures[cid]
         bounds = footprint(t, gray.shape, 60)
         grid = Affine(REF_RES, 0, bounds[0], 0, -REF_RES, bounds[3])
         size = (int((bounds[2] - bounds[0]) / REF_RES), int((bounds[3] - bounds[1]) / REF_RES))
         to_cap = ~t * grid                                # warped pixel -> capture pixel
         M = np.array(to_cap[:6], np.float64).reshape(2, 3)
-        flags = cv2.INTER_LINEAR | cv2.WARP_INVERSE_MAP
-        warped = cv2.warpAffine(gray, M, size, flags=flags)
-        valid = cv2.warpAffine((~mask).astype(np.uint8), M, size, flags=cv2.INTER_NEAREST | cv2.WARP_INVERSE_MAP) > 0
+        inverse = cv2.WARP_INVERSE_MAP
+        warped = cv2.warpAffine(gray, M, size, flags=cv2.INTER_LINEAR | inverse)
+        valid = cv2.warpAffine((~masks[cid]).astype(np.uint8), M, size, flags=cv2.INTER_NEAREST | inverse) > 0
         src, dst = [], []
         for ref in refs:
             win, wt = ref.window(bounds)
@@ -210,57 +232,85 @@ def register(captures: dict, mask: np.ndarray, refs: list, site_bounds, log=prin
             dst.append(_to_map(wt, p1[keep]))
         return fit_model(np.vstack(src), np.vstack(dst), gray.shape, similarity_ok=True)
 
-    def accept(year, fit, method, confidence):
-        done[year] = {**fit, "method": method, "confidence": confidence}
-        log(f"    capture {year}: {method} ({confidence}), {fit['model']}, {fit['inliers']} inliers, "
+    def accept(cid, fit, method, confidence):
+        done[cid] = {**fit, "method": method, "confidence": confidence}
+        log(f"    capture {cid}: {method} ({confidence}), {fit['model']}, {fit['inliers']} inliers, "
             f"RMS {fit['rms_m']:.1f} m")
 
-    def chain_links(year):
-        src, dst = [], []
-        for other in sorted(done, key=lambda y: abs(y - year)):
-            p0, p1 = match(captures[year], captures[other])
-            # icons sit at the same screen position in every capture: drop icon-to-icon matches
-            keep = ~(_in_mask(mask, p0) | _in_mask(mask, p1))
-            src.append(p0[keep])
-            dst.append(_to_map(done[other]["transform"], p1[keep]))
-        return (np.vstack(src), np.vstack(dst)) if src else (np.zeros((0, 2)), np.zeros((0, 2)))
+    def partners(cid):
+        """Registered captures nearest in time (the landscape changes least between them)."""
+        return sorted(done, key=lambda o: (abs(capture_year(o) - capture_year(cid)), o))[:CHAIN_PARTNERS]
 
-    pending = sorted(captures)
-    for year in list(pending):
-        fit = direct(year, captures[year])
+    def pair(cid, other):
+        """Capture-to-capture matches (cid px, other px), icons dropped on both sides."""
+        if (cid, other) not in pair_cache:
+            p0, p1 = match(captures[cid], captures[other])
+            keep = ~(_in_mask(masks[cid], p0) | _in_mask(masks[other], p1))
+            pair_cache[(cid, other)] = (p0[keep], p1[keep])
+        return pair_cache[(cid, other)]
+
+    def chain_links(cid):
+        src, dst = [np.zeros((0, 2))], [np.zeros((0, 2))]
+        for other in partners(cid):
+            p0, p1 = pair(cid, other)
+            src.append(p0)
+            dst.append(_to_map(done[other]["transform"], p1))
+        return np.vstack(src), np.vstack(dst)
+
+    pending = sorted(cid for cid in captures if cid not in done)
+    for cid in list(pending):
+        fit = direct(cid)
         if fit:
-            fine = refine(year, captures[year], fit["transform"])
-            accept(year, fine or fit, "정사영상 직접 정합", "높음")
-            pending.remove(year)
+            fine = refine(cid, fit["transform"])
+            accept(cid, fine or fit, "정사영상 직접 정합", "높음")
+            pending.remove(cid)
 
     # Chain the rest through registered captures until nothing changes, then tie each chained
     # estimate back to the orthophotos so errors do not accumulate along the chain.
-    links = {}
     progress = True
     while pending and progress:
         progress = False
-        for year in list(pending):
-            links[year] = chain_links(year)
-            fit = fit_model(*links[year], captures[year].shape, similarity_ok=True)
+        for cid in list(pending):
+            fit = fit_model(*chain_links(cid), captures[cid].shape, similarity_ok=True)
             if not fit:
                 continue
-            fine = refine(year, captures[year], fit["transform"])
+            fine = refine(cid, fit["transform"])
             if fine:
-                accept(year, fine, "항공사진 연계 후 정사영상 정합", "보통")
+                accept(cid, fine, "항공사진 연계 후 정사영상 정합", "보통")
             else:
-                accept(year, fit, "항공사진 연계", "보통")
-            pending.remove(year)
+                accept(cid, fit, "항공사진 연계", "보통")
+            pending.remove(cid)
             progress = True
 
-    # Last resort for captures that overlap the others only in a corner: a similarity from the
-    # clustered links is a rough first guess, kept only if the orthophotos then confirm it.
-    for year in list(pending):
-        rough = fit_model(*links.get(year, chain_links(year)), captures[year].shape, similarity_ok=True,
-                          min_inliers=WEAK_MIN_INLIERS, min_spread_similarity=0.0)
-        fine = rough and refine(year, captures[year], rough["transform"])
+    # Last resort for captures that overlap the others only in a corner: a similarity per partner
+    # from the clustered overlap. The best one is kept if the orthophotos confirm it; otherwise it is
+    # kept only as an approximate position (ROUGH_MIN_INLIERS), with the spread between the partners'
+    # estimates reported as its uncertainty.
+    for cid in list(pending):
+        h, w = captures[cid].shape
+        centre = np.array([[w / 2, h / 2]])
+        guesses = []
+        for other in partners(cid):
+            p0, p1 = pair(cid, other)
+            fit = fit_model(p0, _to_map(done[other]["transform"], p1), (h, w), similarity_ok=True,
+                            min_inliers=WEAK_MIN_INLIERS, min_spread_similarity=0.0)
+            if fit:
+                guesses.append((fit["inliers"], other, fit))
+        if not guesses:
+            continue
+        guesses.sort(key=lambda g: g[0], reverse=True)
+        n, other, rough = guesses[0]
+        centres = np.vstack([_to_map(g[2]["transform"], centre) for g in guesses])
+        spread_m = float(np.linalg.norm(centres - centres[0], axis=1).max()) if len(guesses) > 1 else None
+        fine = refine(cid, rough["transform"])
         if fine:
-            accept(year, fine, "부분 중첩 연계 후 정사영상 정합", "낮음")
-            pending.remove(year)
-    for year in pending:
-        log(f"    capture {year}: not enough reliable matches, skipped")
-    return done
+            accept(cid, fine, "부분 중첩 연계 후 정사영상 정합", "낮음")
+        elif n >= ROUGH_MIN_INLIERS:
+            accept(cid, {**rough, "uncertainty_m": spread_m}, f"항공사진 {other} 부분 중첩 연계 (위치 대략)", "낮음")
+        else:
+            continue
+        pending.remove(cid)
+    for cid in pending:
+        log(f"    capture {cid}: not enough reliable matches, skipped")
+    return {cid: r for cid, r in done.items() if cid not in (fixed or {})}
+

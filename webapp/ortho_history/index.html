@@ -6,6 +6,7 @@
 <title>정사영상 변천 뷰어</title>
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/proj4js/2.11.0/proj4.js"></script>
 <style>
   :root {
     --bg: #f8fafc; --panel: #ffffff; --text: #1f2937; --muted: #6b7280; --line: #e5e7eb;
@@ -48,7 +49,21 @@
   dt { color: var(--muted); }
   dd { margin: 0; word-break: keep-all; }
   .warn { color: var(--warn); }
-  .swatch { width: 18px; height: 0; border-top: 3px solid; display: inline-block; }
+  .link { border: 0; background: none; color: var(--accent); padding: 0; cursor: pointer; text-decoration: underline;
+    font-size: 11px; }
+  .elev-legend { background: rgba(255,255,255,.88); border-radius: 6px; padding: 6px 8px 6px 6px; font-size: 11px;
+    box-shadow: 0 1px 4px rgba(0,0,0,.3); display: flex; gap: 6px; line-height: 1; }
+  .elev-legend .bar { width: 12px; height: 180px; border-radius: 2px; }
+  .elev-legend .ticks { display: flex; flex-direction: column; justify-content: space-between; font-weight: 700; }
+  .elev-legend .unit { color: var(--muted); font-weight: 400; margin-top: 4px; }
+  #photo-modal { position: fixed; inset: 0; z-index: 2000; background: rgba(15, 23, 42, .65);
+    display: grid; place-items: center; padding: 16px; }
+  #photo-modal .box { background: var(--panel); border-radius: 10px; padding: 12px; max-width: min(900px, 100%);
+    max-height: 100%; overflow: auto; box-shadow: 0 10px 30px rgba(0,0,0,.35); }
+  #photo-modal .head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+  #photo-modal .head button { border: 1px solid var(--line); background: #fff; border-radius: 6px; padding: 4px 10px;
+    cursor: pointer; }
+  #photo-modal img { display: block; max-width: 100%; height: auto; }
 
   .badge { position: absolute; top: 12px; z-index: 900; background: rgba(17, 24, 39, .82); color: #fff;
     font-size: 22px; font-weight: 700; padding: 4px 14px; border-radius: 8px; pointer-events: none; }
@@ -118,8 +133,49 @@
           <option value="none">없음</option>
         </select>
       </div>
-      <div id="boundary-toggles"></div>
       <div class="nav"><button id="fit">현장 범위로 이동</button></div>
+    </section>
+
+    <section id="terrain-section" hidden>
+      <h2>지형·지표수 (DEM 5 m)</h2>
+      <div class="row"><span style="width:52px">음영기복</span>
+        <select id="relief-style" style="flex:1">
+          <option value="none">끄기</option>
+          <option value="gray">회색</option>
+          <option value="color">컬러 (표고별 색)</option>
+          <option value="elev">기복도 (표고 파랑→주황, 범례)</option>
+        </select></div>
+      <div class="row" id="relief-src-row" hidden><span style="width:52px">자료</span>
+        <select id="relief-src" style="flex:1">
+          <option value="auto">자동 (0.5 m 범위는 정밀 DTM)</option>
+          <option value="5m">DEM 5 m만</option>
+          <option value="hr">DTM 0.5 m만</option>
+        </select></div>
+      <div class="row" id="relief-op-row" hidden><span>투명도</span>
+        <input type="range" id="relief-opacity" min="10" max="100" value="70"><span id="relief-opacity-val">70%</span></div>
+      <div class="row"><label><input type="checkbox" data-layer="flowacc"> 흐름 누적 (물이 모이는 곳)</label></div>
+      <div class="row"><label><input type="checkbox" data-layer="twi"> 지형습윤지수 (습윤·용출 가능)</label></div>
+      <div class="row" id="fac-row" hidden><label><input type="checkbox" data-layer="facilities" checked> 시설 위치 (차수벽·양수정·관측정·HDPE)</label></div>
+      <div class="row" id="relief-row" hidden><label><input type="checkbox" data-layer="relief"> 미지형 0.5 m (빨강 둔덕·파랑 고랑)</label></div>
+      <div id="fac-legend" class="hint" hidden></div>
+      <div class="row"><label><input type="checkbox" id="arrows-toggle"> 물 흐름 방향 화살표 (확대할수록 촘촘)</label></div>
+      <div class="row" id="arrows-density-row" hidden><span>화살표 간격</span>
+        <input type="range" id="arrows-spacing" min="22" max="70" value="38"><span id="arrows-spacing-val">38 px</span></div>
+      <div class="row"><label><input type="checkbox" data-layer="streams" checked> 하천망 (DEM 추출)</label></div>
+      <div class="row" id="subbasin-row" hidden><label><input type="checkbox" data-layer="subbasins"> 광역 소유역 (빨강: 매립지 유출 경로)</label></div>
+      <div class="row"><label><input type="checkbox" data-layer="site" checked> 매립지 유역·유출 경로</label></div>
+      <div class="row" id="detail-row" hidden><label><input type="checkbox" data-layer="detail"> 매립지 주변 상세: 빗물이 가는 곳·작은 물길</label></div>
+      <div id="detail-legend" class="hint" hidden></div>
+      <div class="nav" id="detail-figure-row" hidden><button id="detail-figure">상세 해석 그림 보기</button></div>
+      <div class="row" id="hr-row" hidden><label><input type="checkbox" data-layer="hr"> 정밀 DTM 0.5 m: 빗물이 가는 곳·물길</label></div>
+      <div class="row" id="dsm-row" hidden><label><input type="checkbox" data-layer="dsm"> <span id="dsm-label">드론 DSM 음영기복</span></label></div>
+      <div class="row" id="change-row" hidden><label><input type="checkbox" data-layer="change"> <span id="change-label">지형 변화</span></label></div>
+      <div id="change-legend" class="hint" hidden></div>
+      <div id="hr-legend" class="hint" hidden></div>
+      <div class="nav" id="hr-figure-row" hidden><button id="hr-figure">5 m vs 0.5 m 비교 그림</button></div>
+      <div class="nav"><button id="trace-btn">물길 추적: 지도 클릭</button><button id="trace-clear">지우기</button></div>
+      <div class="hint" id="trace-info">버튼을 누른 뒤 지도를 클릭하면 그 지점에 내린 빗물이 흘러가는 경로(빨강)와 그 지점으로 모이는 상류 범위(파랑)를 보여 줍니다.</div>
+      <div class="hint" id="terrain-note"></div>
     </section>
 
     <section>
@@ -135,6 +191,13 @@
     <div id="coords"></div>
   </div>
 </div>
+<div id="photo-modal" hidden>
+  <div class="box">
+    <div class="head"><b id="photo-title"></b><button id="photo-close">닫기 ✕</button></div>
+    <img id="photo-img" alt="">
+    <div class="hint" id="photo-note"></div>
+  </div>
+</div>
 
 <script>
 const BASEMAPS = {
@@ -146,29 +209,27 @@ const BASEMAPS = {
   carto: ['https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png',
           {maxNativeZoom: 20, subdomains: 'abcd', attribution: '&copy; OpenStreetMap &copy; CARTO'}],
 };
-const BOUNDARY_STYLES = [
-  {color: '#facc15', weight: 3, dashArray: '8 6', fill: false},
-  {color: '#ef4444', weight: 3, fill: false},
-  {color: '#22d3ee', weight: 3, fill: false},
-];
 const BLANK = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7';
 
 const $ = (id) => document.getElementById(id);
-const map = L.map('map', {zoomControl: true, minZoom: 8, maxZoom: 21});
+const map = L.map('map', {zoomControl: true, minZoom: 8, maxZoom: 23});
 L.control.scale({imperial: false}).addTo(map);
 map.createPane('ortho-left').style.zIndex = 250;
 map.createPane('ortho-right').style.zIndex = 260;
 
 const state = {mode: 'single', index: 0, left: 0, right: 0, opacity: 1, divider: 0.5, playing: null};
-let layers = [], tileLayers = {}, basemap = null, boundaryLayers = [];
+let layers = [], tileLayers = {}, basemap = null, siteBounds = null;
+
+const name = (d) => d.kind === 'drone' ? `${d.label} 드론` : `${d.year}년`;
 
 function tileLayer(i, pane) {
   const key = `${i}-${pane}`;
   if (!tileLayers[key]) {
     const d = layers[i];
     tileLayers[key] = L.tileLayer(d.tiles, {
-      pane, minNativeZoom: d.min_zoom, maxNativeZoom: d.max_zoom, maxZoom: 21,
-      bounds: L.latLngBounds(d.bounds), errorTileUrl: BLANK, attribution: '정사영상 &copy; 국토지리정보원',
+      pane, minNativeZoom: d.min_zoom, maxNativeZoom: d.max_zoom, maxZoom: 23,
+      bounds: L.latLngBounds(d.bounds), errorTileUrl: BLANK,
+      attribution: d.kind === 'drone' ? '드론 정사영상 (본 과제)' : '정사영상 &copy; 국토지리정보원',
     });
   }
   return tileLayers[key];
@@ -179,7 +240,7 @@ function setBasemap(name) {
   basemap = null;
   if (BASEMAPS[name]) {
     const [url, opts] = BASEMAPS[name];
-    basemap = L.tileLayer(url, {...opts, maxZoom: 21}).addTo(map);
+    basemap = L.tileLayer(url, {...opts, maxZoom: 23}).addTo(map);
   }
 }
 
@@ -203,9 +264,9 @@ function render() {
   $('swipe').hidden = !compare;
   $('badge-main').hidden = compare;
   $('badge-left').hidden = $('badge-right').hidden = !compare;
-  $('badge-main').textContent = `${layers[state.index].year}년`;
-  $('badge-left').textContent = `◀ ${layers[state.left].year}년`;
-  $('badge-right').textContent = `${layers[state.right].year}년 ▶`;
+  $('badge-main').textContent = name(layers[state.index]);
+  $('badge-left').textContent = `◀ ${name(layers[state.left])}`;
+  $('badge-right').textContent = `${name(layers[state.right])} ▶`;
   document.querySelectorAll('#mode button').forEach(b => b.classList.toggle('on', b.dataset.mode === state.mode));
   document.querySelectorAll('.year').forEach((b, i) => b.classList.toggle('on', i === state.index));
   $('left-year').value = state.left;
@@ -218,15 +279,31 @@ function renderMeta(indices) {
   const rows = [];
   for (const i of indices) {
     const d = layers[i], m = d.metadata;
-    if (indices.length > 1) rows.push(['', `<b>${d.year}년</b>`]);
-    else rows.push(['촬영년도', `<b>${d.year}년</b>`]);
+    if (indices.length > 1) rows.push(['', `<b>${name(d)}</b>`]);
+    else rows.push([d.kind === 'drone' ? '촬영일' : '촬영년도', `<b>${name(d)}</b>`]);
     if (d.kind === 'capture') {
       const r = d.registration;
-      const conf = r.confidence === '낮음' ? `<span class="warn">낮음 (수십 m 어긋날 수 있음)</span>` : r.confidence;
+      const conf = r.confidence !== '낮음' ? r.confidence
+        : `<span class="warn">낮음 (${r.uncertainty_m ? `최대 약 ${r.uncertainty_m} m` : '수십 m'} 어긋날 수 있음)</span>`;
       rows.push(['자료', '항공사진 (국토정보플랫폼 화면 캡처)'], ['해상도', `약 ${d.gsd_m} m/픽셀`],
         ['위치 정합', r.method], ['신뢰도', conf]);
       if (r.inliers) rows.push(['정합 근거', `대응점 ${r.inliers}개 · 잔차 ${r.rms_m} m`]);
+      if (d.area_km2) rows.push(['촬영 범위', `약 ${d.area_km2} km²`]);
+      if (d.edits?.length) rows.push(['영상 보정', d.edits.join('<br>')]);
+      if (d.alternates?.length) {
+        rows.push(['같은 연도', d.alternates.map(a => `${a.file} (${a.confidence
+          ? `신뢰도 ${a.confidence}${a.area_km2 ? `, ${a.area_km2} km²` : ''}` : '정합 실패'})`).join('<br>') +
+          '<br><span style="color:var(--muted)">신뢰도가 높고 범위가 넓은 사진을 표시합니다.</span>']);
+      }
       rows.push(['참고', '정사보정 전 단일 사진이라 지형 기복에 따른 왜곡이 남아 있습니다.'],
+        ['파일', `<span style="font-size:11px">${d.file}</span>`]);
+      continue;
+    }
+    if (d.kind === 'drone') {
+      const s = d.shift_vs_reference;
+      rows.push(['자료', '드론 정사영상 (본 과제 촬영)'], ['해상도', `${(d.gsd_m * 100).toFixed(1)} cm/픽셀`],
+        ['위치 정보', '파일 내 좌표 (EPSG:5186)' + (s ? ` · NGII ${s.reference_year} 대비 ${Math.hypot(s.dx_m, s.dy_m).toFixed(1)} m` : '')],
+        ['참고', '확대 22단계까지 원본 해상도로 표시. 촬영 범위 밖은 비어 있습니다.'],
         ['파일', `<span style="font-size:11px">${d.file}</span>`]);
       continue;
     }
@@ -273,8 +350,8 @@ function togglePlay() {
 }
 
 function fitSite() {
-  const b = boundaryLayers.length ? L.featureGroup(boundaryLayers).getBounds() : L.latLngBounds(layers[0].bounds);
-  map.fitBounds(b, {padding: [20, 20]});
+  // the site KMZs are not drawn; they only set the initial view
+  map.fitBounds(siteBounds || L.latLngBounds(layers[layers.length - 1].bounds), {padding: [20, 20]});
 }
 
 function initSwipe() {
@@ -303,31 +380,35 @@ async function init() {
   layers = manifest.layers;
   $('source').textContent = `${manifest.source} · ${layers.length}개 시기`;
 
-  const yearNote = (d) => d.kind === 'capture'
+  const yearNote = (d) => d.kind === 'drone' ? `${(d.gsd_m * 100).toFixed(1)} cm 드론`
+    : d.kind === 'capture'
     ? `항공사진${d.registration.confidence === '낮음' ? ' · 위치 대략' : ''}`
     : `${d.gsd_m < 0.35 ? '25 cm' : '51 cm'} 정사영상${d.metadata ? '' : ' · XML 없음'}`;
   $('years').innerHTML = layers.map((d, i) =>
-    `<button class="year${d.kind === 'capture' ? ' capture' : ''}" data-i="${i}"><b>${d.year}</b>` +
+    `<button class="year${d.kind === 'capture' ? ' capture' : ''}" data-i="${i}"><b>${d.kind === 'drone' ? d.label : d.year}</b>` +
     `<span>${yearNote(d)}</span></button>`).join('');
   const skipped = manifest.skipped_captures || [];
   $('skipped').hidden = !skipped.length;
-  $('skipped').innerHTML = skipped.map(s => `${s.year}년 항공사진은 위치를 맞추지 못해 제외했습니다 (${s.reason}).`).join('<br>');
+  $('skipped').innerHTML = skipped.map((s, i) =>
+    `${s.year}년 항공사진은 위치를 맞추지 못해 지도에서 제외했습니다.` +
+    (s.photos || []).map((p, k) =>
+      ` <button class="link" data-photo="${i}" data-k="${k}">사진 보기${s.photos.length > 1 ? ` ${k + 1}` : ''}</button>`
+    ).join('')).join('<br>');
+  document.querySelectorAll('[data-photo]').forEach(b => b.onclick = () => {
+    const s = skipped[+b.dataset.photo];
+    $('photo-title').textContent = `${s.year}년 항공사진 (지도 미표시)`;
+    $('photo-img').src = s.photos[+b.dataset.k];
+    $('photo-note').textContent = `${s.reason}. 국토정보플랫폼 화면 캡처 원본입니다.`;
+    $('photo-modal').hidden = false;
+  });
+  $('photo-close').onclick = $('photo-modal').onclick = (e) => {
+    if (e.target === $('photo-modal') || e.target === $('photo-close')) $('photo-modal').hidden = true;
+  };
   document.querySelectorAll('.year').forEach(b => b.onclick = () => { state.index = +b.dataset.i; render(); });
-  const options = layers.map((d, i) => `<option value="${i}">${d.year}년</option>`).join('');
+  const options = layers.map((d, i) => `<option value="${i}">${name(d)}</option>`).join('');
   $('left-year').innerHTML = $('right-year').innerHTML = options;
 
-  const features = manifest.boundaries.features;
-  $('boundary-toggles').innerHTML = features.map((f, i) =>
-    `<div class="row"><label><input type="checkbox" data-i="${i}" checked>` +
-    `<span class="swatch" style="border-color:${BOUNDARY_STYLES[i % 3].color};` +
-    `${BOUNDARY_STYLES[i % 3].dashArray ? 'border-top-style:dashed' : ''}"></span>` +
-    `${f.properties.file.replace(/\.km[lz]$/, '')}</label></div>`).join('');
-  boundaryLayers = features.map((f, i) =>
-    L.geoJSON(f, {style: BOUNDARY_STYLES[i % 3], interactive: false}).addTo(map));
-  document.querySelectorAll('#boundary-toggles input').forEach(cb => cb.onchange = () => {
-    const lyr = boundaryLayers[+cb.dataset.i];
-    cb.checked ? lyr.addTo(map) : map.removeLayer(lyr);
-  });
+  if (manifest.boundaries?.features?.length) siteBounds = L.geoJSON(manifest.boundaries).getBounds();
 
   state.index = layers.length - 1;
   state.right = layers.length - 1;
@@ -359,6 +440,7 @@ async function init() {
   map.on('mousemove', (e) => { $('coords').textContent = `${e.latlng.lat.toFixed(6)}°N, ${e.latlng.lng.toFixed(6)}°E`; });
   initSwipe();
 
+  initTerrain();
   setBasemap('esri');
   render();
   // A tab opened in the background has a 0x0 map; fit once it has a real size.
@@ -371,6 +453,396 @@ async function init() {
   window.addEventListener('resize', fitWhenSized);
   document.addEventListener('visibilitychange', fitWhenSized);
   fitWhenSized();
+}
+
+// --- terrain / surface water (terrain/*, written by build_terrain.py) -------------------------
+const DR = [0, 0, 1, 1, 1, 0, -1, -1, -1], DC = [0, 1, 1, 0, -1, -1, -1, 0, 1];
+const terrain = {meta: null, d8: null, layers: {}, trace: null, tracing: false};
+
+async function initTerrain() {
+  const res = await fetch('terrain/meta.json', {cache: 'no-cache'}).catch(() => null);
+  if (!res || !res.ok) return;
+  const meta = await res.json();
+  terrain.meta = meta;
+  proj4.defs('EPSG:5186', meta.proj4);
+  map.createPane('terrain').style.zIndex = 300;
+  const img = (name, opacity) => L.imageOverlay(`terrain/${name}.webp`, meta.bounds, {pane: 'terrain', opacity});
+  terrain.relief = {gray5: img('hillshade', 0.7), color5: img('hillshade_color', 0.7)};
+  if (meta.elev_range) { terrain.relief.elev5 = img('hillshade_elev', 0.7); terrain.relief.range5 = meta.elev_range; }
+  terrain.layers.flowacc = img('flowacc', 0.9);
+  terrain.layers.twi = img('twi', 0.75);
+  const canvas = L.canvas({padding: 0.3});            // thousands of segments: canvas, not SVG
+  const streams = await fetch('terrain/streams.geojson', {cache: 'no-cache'}).then(r => r.json());
+  terrain.layers.streams = L.geoJSON(streams, {
+    renderer: canvas,
+    style: f => ({color: '#2563eb', weight: [0, 1, 1.6, 2.4, 3.4, 4.8, 6.4, 8][Math.min(f.properties.order, 7)],
+                  opacity: 0.9}),
+    onEachFeature: (f, l) => l.bindTooltip(`하천 ${f.properties.order}차 · 상류 ${f.properties.area_ha >= 100
+      ? (f.properties.area_ha / 100).toFixed(1) + ' km²' : f.properties.area_ha + ' ha'}`, {sticky: true}),
+  });
+  const subs = await fetch('terrain/subbasins.geojson', {cache: 'no-cache'}).then(r => r.ok ? r.json() : null).catch(() => null);
+  if (subs) {
+    const PAL = ['#a5b4fc', '#99f6e4', '#fde68a', '#fbcfe8', '#bbf7d0', '#fed7aa', '#c7d2fe', '#d9f99d', '#bae6fd', '#fecaca'];
+    terrain.layers.subbasins = L.geoJSON(subs, {
+      pane: 'terrain', renderer: L.canvas({pane: 'terrain'}),
+      style: f => f.properties.on_path || f.properties.landfill
+        ? {color: '#b91c1c', weight: 2.5, fillColor: '#f87171', fillOpacity: 0.28}
+        : {color: '#475569', weight: 1, opacity: 0.8, fillColor: PAL[f.properties.id % PAL.length], fillOpacity: 0.3},
+      onEachFeature: (f, l) => l.bindTooltip(
+        `소유역 ${f.properties.area_km2} km² · 출구까지 누적 ${f.properties.outlet_km2} km²`
+        + (f.properties.landfill ? '<br><b>매립지가 있는 소유역</b>' : f.properties.on_path ? '<br><b>매립지 유출수가 지나는 소유역</b>' : ''),
+        {sticky: true}),
+    });
+    $('subbasin-row').hidden = false;
+  }
+  const site = await fetch('terrain/site.geojson', {cache: 'no-cache'}).then(r => r.json());
+  terrain.layers.site = L.geoJSON(site, {
+    style: f => f.properties.kind === 'landfill_catchment'
+      ? {color: '#ea580c', weight: 2.5, dashArray: '6 5', fillColor: '#fb923c', fillOpacity: 0.12}
+      : {color: '#dc2626', weight: 4, opacity: 0.95},
+    onEachFeature: (f, l) => l.bindTooltip(f.properties.kind === 'landfill_catchment'
+      ? `매립지로 지표수가 모이는 범위 ${f.properties.area_ha} ha`
+      : `매립지 지표수 유출 경로 ${(f.properties.length_m / 1000).toFixed(1)} km (DEM 범위 끝까지)`, {sticky: true}),
+  });
+  if (meta.detail) {
+    const [basins, flows] = await Promise.all(['detail_basins', 'detail_flows'].map(
+      n => fetch(`terrain/${n}.geojson`, {cache: 'no-cache'}).then(r => r.json())));
+    const basinLayer = L.geoJSON(basins, {
+      pane: 'terrain',
+      style: f => ({color: 'white', weight: 1.2, opacity: 0.9, fillColor: f.properties.color, fillOpacity: 0.33}),
+      onEachFeature: (f, l) => l.bindTooltip(`${f.properties.name}<br>${f.properties.area_ha} ha (창 범위 안)`, {sticky: true}),
+    });
+    const flowLayer = L.geoJSON(flows, {
+      style: f => ({color: f.properties.color, opacity: 0.95, lineCap: 'round',
+                    weight: Math.max(2, Math.min(7, 2 + 2.2 * Math.log10(f.properties.area_ha / 0.5)))}),
+      onEachFeature: (f, l) => l.bindTooltip(`작은 물길 · 상류 ${f.properties.area_ha} ha`, {sticky: true}),
+    });
+    const mfdLayer = L.imageOverlay('terrain/detail_mfd.png', meta.detail.bounds, {pane: 'terrain', opacity: 0.85});
+    terrain.layers.detail = L.layerGroup([basinLayer, mfdLayer, flowLayer]);
+    $('detail-row').hidden = false;
+    $('detail-legend').innerHTML = meta.detail.classes.map(c =>
+      `<span style="display:inline-block;width:12px;height:12px;background:${c.color};opacity:.75;border-radius:2px;`
+      + `vertical-align:-1px;margin-right:5px"></span>${c.name} ${c.area_ha} ha`).join('<br>')
+      + `<br>파란 음영 = 사면에서 빗물이 모이는 정도(MFD)<br>선 굵기 = 상류 면적 (${meta.detail.flow_min_ha} ha 이상 물길)`;
+    const fig = await fetch('terrain/surface_watershed.png', {method: 'HEAD', cache: 'no-cache'}).catch(() => null);
+    if (fig && fig.ok) {
+      $('detail-figure-row').hidden = false;
+      $('detail-figure').onclick = () => {
+        $('photo-title').textContent = '매립지 주변 강우 시 지표수 흐름 상세 해석';
+        $('photo-img').src = 'terrain/surface_watershed.png';
+        $('photo-note').textContent = 'DEM 5 m 기반 D8 해석. 지하 흐름·배수시설은 반영하지 않음.';
+        $('photo-modal').hidden = false;
+      };
+    }
+  }
+  const fac = await fetch('terrain/facilities.geojson', {cache: 'no-cache'}).then(r => r.ok ? r.json() : null).catch(() => null);
+  if (fac) {
+    map.createPane('facilities').style.zIndex = 460;
+    const SRC = {drone: '드론 정사영상 판독', dtm: '0.5 m DTM 미지형 판독 (추정)', plan: '시설 배치도 정합 (오차 수 m)'};
+    const KIND = {pumping_well: ['양수정', '#f59e0b'], monitoring_well: ['관측정', '#22c55e'],
+                  collection_sump: ['집수구', '#2563eb'], storage_tank: ['저류조', '#db2777']};
+    const tip = (p) => `<b>${p.name || 'HDPE 시트 경계'}</b>` + (p.length_m ? ` · ${p.length_m} m` : '')
+      + (p.area_ha ? ` · ${p.area_ha} ha` : '') + `<br>위치 근거: ${SRC[p.source] || '-'}`
+      + (p.evidence ? `<br><span style="font-size:11px">${p.evidence}</span>` : '');
+    terrain.layers.facilities = L.geoJSON(fac, {
+      pane: 'facilities',
+      style: f => f.properties.kind === 'hdpe_liner'
+        ? {color: '#facc15', weight: 2.5, dashArray: '8 5', fill: false}
+        : {color: '#dc2626', weight: 5, opacity: 0.95, dashArray: f.properties.source === 'dtm' ? '10 6' : null},
+      pointToLayer: (f, ll) => L.circleMarker(ll, {pane: 'facilities', radius: 6, weight: 2, color: '#111827',
+        fillColor: (KIND[f.properties.kind] || ['', '#fff'])[1], fillOpacity: 1}),
+      onEachFeature: (f, l) => l.bindTooltip(tip(f.properties), {sticky: true}),
+    });
+    $('fac-row').hidden = false;
+    $('fac-legend').innerHTML = '<span style="color:#dc2626;font-weight:700">━</span> 상류 차수벽(드론 판독) '
+      + '<span style="color:#dc2626;font-weight:700">╍</span> 하류 차수벽(DTM 추정)<br>'
+      + Object.values(KIND).map(([n, c]) => `<span style="display:inline-block;width:10px;height:10px;border-radius:50%;`
+        + `background:${c};border:1.5px solid #111;vertical-align:-1px"></span> ${n}`).join(' ')
+      + ' <span style="color:#ca8a04">╍</span> HDPE 경계<br>우물·집수구는 배치도 정합 위치(오차 수 m)';
+  }
+  // a newer drone DSM (build_dsm_layers.py): its relief, and the change of the bare ground since the 0.5 m DTM
+  const dsmRes = await fetch('terrain/dsm_meta.json', {cache: 'no-cache'}).catch(() => null);
+  if (dsmRes && dsmRes.ok) {
+    const dm = await dsmRes.json(), c = dm.change;
+    terrain.layers.dsm = L.imageOverlay('terrain/dsm_relief.webp', dm.relief_bounds, {pane: 'terrain', opacity: 0.85});
+    terrain.layers.change = L.imageOverlay('terrain/dsm_change.webp', dm.change_bounds, {pane: 'terrain', opacity: 0.95});
+    $('dsm-label').textContent = `${dm.date} 드론 DSM 음영기복 (표고 ${dm.elev_range[0]}~${dm.elev_range[1]} m)`;
+    $('change-label').textContent = `지형 변화 ${dm.before_date} → ${dm.date} (맨땅만)`;
+    $('change-legend').innerHTML =
+      '<span style="color:#d7302a;font-weight:700">■</span> 높아짐 (성토·적치) '
+      + '<span style="color:#2563eb;font-weight:700">■</span> 낮아짐 (절토·침하)<br>'
+      + `±${dm.noise_m} m 안은 투명, ±${dm.full_m} m부터 진하게. 식생·거친 표면(나무·태양광 패널)·급경사는 뺌 `
+      + `(나무 아래는 비교 불가: DSM은 나무 위, DTM은 땅).<br>`
+      + `${dm.report_m} m 넘게 높아짐 ${(c.raised_m2 / 1e4).toFixed(1)} ha · ${Math.round(c.raised_m3).toLocaleString()} m³, `
+      + `낮아짐 ${(c.lowered_m2 / 1e4).toFixed(1)} ha · ${Math.round(c.lowered_m3).toLocaleString()} m³ `
+      + `(평탄한 맨땅 오차 ±${c.flat_spread_m} m)`;
+    $('dsm-row').hidden = false;
+    $('change-row').hidden = false;
+    document.querySelector('#change-row input').addEventListener('change',
+      e => { $('change-legend').hidden = !e.target.checked; });
+  }
+  const hrRes = await fetch('terrain/hr_meta.json', {cache: 'no-cache'}).catch(() => null);
+  if (hrRes && hrRes.ok) {
+    const hr = await hrRes.json();
+    const [hb, hf, hs] = await Promise.all(['hr_basins', 'hr_flows', 'hr_site'].map(
+      n => fetch(`terrain/${n}.geojson`, {cache: 'no-cache'}).then(r => r.json())));
+    const hrCanvas = L.canvas({padding: 0.3});
+    terrain.layers.hr = L.layerGroup([
+      L.geoJSON(hb, {pane: 'terrain', renderer: L.canvas({pane: 'terrain'}),
+        style: f => ({color: 'white', weight: 1, opacity: 0.9, fillColor: f.properties.color, fillOpacity: 0.3}),
+        onEachFeature: (f, l) => l.bindTooltip(`${f.properties.name}<br>${f.properties.area_ha} ha (0.5 m DTM 범위 안)`, {sticky: true})}),
+      L.imageOverlay('terrain/hr_mfd.webp', hr.bounds, {pane: 'terrain', opacity: 0.85}),
+      L.geoJSON(hf, {renderer: hrCanvas,
+        style: f => ({color: f.properties.color, opacity: 0.95, lineCap: 'round',
+                      weight: Math.max(1.2, Math.min(6, 1.2 + 1.8 * Math.log10(f.properties.area_ha / 0.2)))}),
+        onEachFeature: (f, l) => l.bindTooltip(`물길 · 상류 ${f.properties.area_ha} ha`, {sticky: true})}),
+      L.geoJSON(hs, {renderer: hrCanvas,
+        style: f => f.properties.kind === 'landfill_catchment'
+          ? {color: '#ea580c', weight: 2.5, dashArray: '6 5', fill: false}
+          : {color: '#c026d3', weight: 4.5},   // 0.5 m path: magenta, the 5 m path stays red
+        onEachFeature: (f, l) => l.bindTooltip(f.properties.kind === 'landfill_catchment'
+          ? `매립지로 지표수가 모이는 범위 ${f.properties.area_ha} ha (0.5 m)`
+          : `매립지 지표 유출 경로 ${(f.properties.length_m / 1000).toFixed(2)} km (0.5 m DTM 범위 끝까지)`, {sticky: true})}),
+    ]);
+    terrain.relief.grayhr = L.imageOverlay('terrain/hr_hillshade.webp', hr.bounds, {pane: 'terrain', opacity: 0.7});
+    terrain.relief.colorhr = L.imageOverlay('terrain/hr_hillshade_color.webp', hr.bounds, {pane: 'terrain', opacity: 0.7});
+    terrain.relief.hasHr = true;
+    if (hr.elev_range) {
+      terrain.relief.elevhr = L.imageOverlay('terrain/hr_hillshade_elev.webp', hr.bounds, {pane: 'terrain', opacity: 0.7});
+      terrain.relief.elev5site = img('hillshade_elev_site', 0.7);   // 5 m tinted on the DTM range
+      terrain.relief.rangeHr = hr.elev_range;
+    }
+    if (hr.relief_bounds) {
+      terrain.layers.relief = L.imageOverlay('terrain/hr_relief.webp', hr.relief_bounds, {pane: 'terrain', opacity: 0.9});
+      $('relief-row').hidden = false;
+    }
+    $('hr-row').hidden = false;
+    $('hr-legend').innerHTML = hr.classes.map(c =>
+      `<span style="display:inline-block;width:12px;height:12px;background:${c.color};opacity:.75;border-radius:2px;`
+      + `vertical-align:-1px;margin-right:5px"></span>${c.name} ${c.area_ha} ha`).join('<br>')
+      + `<br>매립지 유역: 0.5 m ${hr.catchment_ha} ha` + (hr.catchment_ha_5m ? ` (5 m ${hr.catchment_ha_5m} ha)` : '')
+      + `<br>선 굵기 = 상류 면적 (${hr.flow_min_ha} ha 이상 물길)`
+      + '<br><span style="color:#c026d3;font-weight:700">━</span> 유출 경로(현재 지형 0.5 m) · <span style="color:#dc2626;font-weight:700">━</span> 유출 경로(5 m)';
+    const fig = await fetch('terrain/surface_watershed_hr.png', {method: 'HEAD', cache: 'no-cache'}).catch(() => null);
+    if (fig && fig.ok) {
+      $('hr-figure-row').hidden = false;
+      $('hr-figure').onclick = () => {
+        $('photo-title').textContent = '매립지 지표수 흐름 — DEM 5 m vs DTM 0.5 m';
+        $('photo-img').src = 'terrain/surface_watershed_hr.png';
+        $('photo-note').textContent = '0.5 m DTM은 현재 지형(HDPE 면·벤치·도로·수로). 지하 흐름은 반영하지 않음.';
+        $('photo-modal').hidden = false;
+      };
+    }
+  }
+  document.querySelectorAll('#terrain-section input[data-layer]').forEach(cb => {
+    const toggle = () => {
+      const l = terrain.layers[cb.dataset.layer];
+      if (!l) return;
+      cb.checked ? l.addTo(map) : map.removeLayer(l);
+      if (cb.dataset.layer === 'detail') $('detail-legend').hidden = !cb.checked;
+      if (cb.dataset.layer === 'hr') $('hr-legend').hidden = !cb.checked;
+      if (cb.dataset.layer === 'facilities') $('fac-legend').hidden = !cb.checked;
+    };
+    cb.onchange = toggle;
+    toggle();
+  });
+  const s = meta.site || {};
+  const km = (meta.width * meta.cell / 1000).toFixed(0) + ' × ' + (meta.height * meta.cell / 1000).toFixed(0) + ' km';
+  $('terrain-note').textContent = `해석 범위 ${km} (${meta.dem}). `
+    + (s.catchment_ha ? `매립지(${s.landfill_ha} ha)로 모이는 지표 유역 ${s.catchment_ha} ha, `
+      + `유출 경로 ${(s.outflow_path_m / 1000).toFixed(1)} km. ` : '')
+    + '함몰지를 채운 뒤 D8로 계산한 지표 흐름이며 침투·지하 흐름은 반영하지 않습니다. '
+    + '채석장 구덩이는 실제로는 물이 고일 수 있습니다.';
+  $('terrain-section').hidden = false;
+
+  $('trace-btn').onclick = () => {
+    terrain.tracing = !terrain.tracing;
+    $('trace-btn').classList.toggle('on', terrain.tracing);
+    map.getContainer().style.cursor = terrain.tracing ? 'crosshair' : '';
+    if (terrain.tracing && !terrain.d8) {
+      fetch('terrain/d8.bin').then(r => r.arrayBuffer()).then(b => { terrain.d8 = new Uint8Array(b); });
+    }
+  };
+  $('trace-clear').onclick = clearTrace;
+  $('arrows-toggle').onchange = (e) => setArrows(e.target.checked);
+  ['relief-style', 'relief-src', 'relief-opacity'].forEach(id => $(id).addEventListener('input', updateRelief));
+  $('arrows-spacing').oninput = (e) => {
+    arrows.spacing = +e.target.value;
+    $('arrows-spacing-val').textContent = `${e.target.value} px`;
+    drawArrows();
+  };
+  map.on('click', (e) => { if (terrain.tracing && terrain.d8) traceAt(e.latlng); });
+}
+
+// --- shaded relief: gray, hypsometric colour or elevation tint (blue -> orange with legend),
+//     5 m regional and/or 0.5 m site DTM, adjustable opacity ----
+// same stops as hydrology.ELEV_RAMP
+const ELEV_RAMP = [[0, '#3a46b6'], [9, '#5781d2'], [17, '#71c1e6'], [25, '#81d0e1'], [34, '#84ddc1'], [42, '#8be1ab'],
+                   [55, '#b8d594'], [63, '#cdc47e'], [71, '#e8a452'], [80, '#ff8221'], [88, '#f27423'], [100, '#cd5c32']];
+let elevLegend = null;
+
+function showElevLegend(range, label) {
+  if (!elevLegend) {
+    elevLegend = L.control({position: 'bottomleft'});
+    elevLegend.onAdd = () => L.DomUtil.create('div', 'elev-legend');
+  }
+  if (!range) { elevLegend.remove(); return; }
+  if (!elevLegend._map) elevLegend.addTo(map);
+  const [lo, hi] = range;
+  const ticks = [1, 0.75, 0.5, 0.25, 0].map(f => (lo + (hi - lo) * f).toFixed(2));
+  elevLegend.getContainer().innerHTML =
+    `<div class="bar" style="background:linear-gradient(to top, ${ELEV_RAMP.map(([p, c]) => `${c} ${p}%`).join(', ')})"></div>`
+    + `<div><div class="ticks" style="height:180px">${ticks.map(v => `<span>${v}</span>`).join('')}</div>`
+    + `<div class="unit">m (${label})</div></div>`;
+}
+
+function updateRelief() {
+  const R = terrain.relief, style = $('relief-style').value, src = $('relief-src').value;
+  const op = $('relief-opacity').value / 100;
+  $('relief-opacity-val').textContent = `${$('relief-opacity').value}%`;
+  $('relief-op-row').hidden = style === 'none';
+  $('relief-src-row').hidden = style === 'none' || !R.hasHr;
+  const want = new Set();
+  const useHr = style !== 'none' && src !== '5m' && R.hasHr && R[style + 'hr'];
+  const use5 = style !== 'none' && (src !== 'hr' || !useHr);
+  if (useHr) want.add(style + 'hr');
+  // elevation tint: when both are shown, the 5 m layer uses the DTM's colour range so colours match at the seam
+  if (use5) want.add(style === 'elev' && useHr ? 'elev5site' : style + '5');
+  for (const key of ['gray5', 'color5', 'elev5', 'elev5site', 'grayhr', 'colorhr', 'elevhr']) {
+    const l = R[key];
+    if (!l) continue;
+    if (want.has(key)) { l.setOpacity(op); if (!map.hasLayer(l)) l.addTo(map); }
+    else if (map.hasLayer(l)) map.removeLayer(l);
+  }
+  // 0.5 m draws over the 5 m layer inside its extent
+  for (const key of ['grayhr', 'colorhr', 'elevhr']) if (R[key] && map.hasLayer(R[key])) R[key].bringToFront();
+  showElevLegend(style !== 'elev' ? null : useHr ? R.rangeHr : R.range5,
+                 useHr ? (use5 ? 'DTM 0.5 m 범위 기준' : 'DTM 0.5 m') : 'DEM 5 m');
+}
+
+// --- flow-direction arrows: fixed screen spacing, so zooming in makes them denser on the ground ----
+const arrows = {on: false, grids: [], spacing: 38, canvas: null, loading: null};
+
+async function loadArrowGrids() {
+  const m = terrain.meta, grids = [];
+  const get = (url) => fetch(url).then(r => r.ok ? r.arrayBuffer() : null).catch(() => null);
+  const hrMeta = await fetch('terrain/hr_meta.json', {cache: 'no-cache'}).then(r => r.ok ? r.json() : null).catch(() => null);
+  if (hrMeta && hrMeta.flowdir) {
+    const b = await get('terrain/hr_flowdir.bin');
+    if (b) grids.push({...hrMeta.flowdir, data: new Uint8Array(b), minZoom: 15, name: '0.5 m'});
+  }
+  const b5 = await get('terrain/flowdir.bin');
+  if (b5) grids.push({x0: m.x0, y0: m.y0, cell: m.cell, width: m.width, height: m.height, data: new Uint8Array(b5), minZoom: 0, name: '5 m'});
+  arrows.grids = grids;
+}
+
+function sampleAzimuth(x, y, zoom) {
+  for (const g of arrows.grids) {
+    if (zoom < g.minZoom) continue;
+    const c = Math.floor((x - g.x0) / g.cell), r = Math.floor((g.y0 - y) / g.cell);
+    if (r < 0 || r >= g.height || c < 0 || c >= g.width) continue;
+    const v = g.data[r * g.width + c];
+    if (v !== 255) return v * 360 / 252;
+  }
+  return null;
+}
+
+function drawArrows() {
+  const cv = arrows.canvas;
+  if (!cv) return;
+  const size = map.getSize(), dpr = window.devicePixelRatio || 1;
+  cv.width = size.x * dpr; cv.height = size.y * dpr;
+  cv.style.width = size.x + 'px'; cv.style.height = size.y + 'px';
+  const ctx = cv.getContext('2d');
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, size.x, size.y);
+  if (!arrows.on || !arrows.grids.length) return;
+  const s = arrows.spacing, zoom = map.getZoom(), len = s * 0.62, head = Math.max(5, s * 0.2);
+  for (let py = s / 2; py < size.y; py += s) {
+    for (let px = s / 2; px < size.x; px += s) {
+      const ll = map.containerPointToLatLng([px, py]);
+      const [x, y] = proj4('EPSG:4326', 'EPSG:5186', [ll.lng, ll.lat]);
+      const az = sampleAzimuth(x, y, zoom);
+      if (az === null) continue;
+      const a = az * Math.PI / 180, dx = Math.sin(a), dy = -Math.cos(a);
+      const x0 = px - dx * len / 2, y0 = py - dy * len / 2, x1 = px + dx * len / 2, y1 = py + dy * len / 2;
+      const path = () => {
+        ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(x1, y1);
+        ctx.moveTo(x1, y1); ctx.lineTo(x1 - head * (dx * 0.87 - dy * 0.5), y1 - head * (dy * 0.87 + dx * 0.5));
+        ctx.moveTo(x1, y1); ctx.lineTo(x1 - head * (dx * 0.87 + dy * 0.5), y1 - head * (dy * 0.87 - dx * 0.5));
+      };
+      ctx.lineCap = 'round';
+      path(); ctx.strokeStyle = 'rgba(255,255,255,0.9)'; ctx.lineWidth = 4.2; ctx.stroke();
+      path(); ctx.strokeStyle = '#0b3a6e'; ctx.lineWidth = 2; ctx.stroke();
+    }
+  }
+}
+
+async function setArrows(on) {
+  arrows.on = on;
+  $('arrows-density-row').hidden = !on;
+  if (on && !arrows.canvas) {
+    arrows.canvas = L.DomUtil.create('canvas', '', map.getContainer());
+    Object.assign(arrows.canvas.style, {position: 'absolute', left: 0, top: 0, zIndex: 450, pointerEvents: 'none'});
+    map.on('move zoomend resize', drawArrows);
+    map.on('zoomstart', () => arrows.canvas.getContext('2d').clearRect(0, 0, arrows.canvas.width, arrows.canvas.height));
+  }
+  if (on && !arrows.grids.length) {
+    arrows.loading = arrows.loading || loadArrowGrids();
+    await arrows.loading;
+  }
+  drawArrows();
+}
+
+function clearTrace() {
+  if (terrain.trace) terrain.trace.forEach(l => map.removeLayer(l));
+  terrain.trace = null;
+}
+
+function traceAt(latlng) {
+  const m = terrain.meta, d8 = terrain.d8, W = m.width, H = m.height;
+  const [x, y] = proj4('EPSG:4326', 'EPSG:5186', [latlng.lng, latlng.lat]);
+  let r = Math.floor((m.y0 - y) / m.cell), c = Math.floor((x - m.x0) / m.cell);
+  if (r < 0 || r >= H || c < 0 || c >= W) { $('trace-info').textContent = 'DEM 범위 밖입니다.'; return; }
+  const centre = (r, c) => { const [lon, lat] = proj4('EPSG:5186', 'EPSG:4326', [m.x0 + (c + 0.5) * m.cell, m.y0 - (r + 0.5) * m.cell]); return [lat, lon]; };
+  // downstream
+  const path = [centre(r, c)];
+  let length = 0, rr = r, cc = c;
+  for (let i = 0; i < W * H; i++) {
+    const k = d8[rr * W + cc];
+    if (!k) break;
+    rr += DR[k]; cc += DC[k];
+    if (rr < 0 || rr >= H || cc < 0 || cc >= W) break;
+    length += (DR[k] && DC[k] ? Math.SQRT2 : 1) * m.cell;
+    path.push(centre(rr, cc));
+  }
+  // upstream: every cell whose flow passes through the clicked cell
+  const seen = new Uint8Array(W * H), stack = [r * W + c];
+  seen[r * W + c] = 1;
+  let n = 1;
+  while (stack.length) {
+    const j = stack.pop(), jr = Math.floor(j / W), jc = j % W;
+    for (let k = 1; k <= 8; k++) {
+      const ir = jr - DR[k], ic = jc - DC[k];          // neighbour that would flow into j with code k
+      if (ir < 0 || ir >= H || ic < 0 || ic >= W) continue;
+      const i = ir * W + ic;
+      if (!seen[i] && d8[i] === k) { seen[i] = 1; n++; stack.push(i); }
+    }
+  }
+  const canvas = document.createElement('canvas');
+  canvas.width = W; canvas.height = H;
+  const ctx = canvas.getContext('2d'), im = ctx.createImageData(W, H);
+  for (let i = 0; i < W * H; i++) if (seen[i]) { im.data[4 * i] = 37; im.data[4 * i + 1] = 99; im.data[4 * i + 2] = 235; im.data[4 * i + 3] = 150; }
+  ctx.putImageData(im, 0, 0);
+  clearTrace();
+  terrain.trace = [
+    L.imageOverlay(canvas.toDataURL(), m.bounds, {pane: 'terrain'}).addTo(map),
+    L.polyline(path, {color: '#dc2626', weight: 4}).addTo(map),
+    L.circleMarker(path[0], {radius: 6, color: '#7f1d1d', fillColor: '#fecaca', fillOpacity: 1}).addTo(map),
+  ];
+  const ha = n * m.cell * m.cell / 1e4;
+  $('trace-info').textContent = `하류 경로 ${(length / 1000).toFixed(2)} km (DEM 범위까지) · `
+    + `이 지점으로 모이는 상류 범위 ${ha < 1 ? ha.toFixed(2) : ha.toFixed(1)} ha`;
 }
 
 init();

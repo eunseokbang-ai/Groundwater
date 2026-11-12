@@ -18,3 +18,5 @@ pillow
 torch
 kornia
 truststore
+numba
+markdown

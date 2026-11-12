@@ -4,7 +4,7 @@ from pathlib import Path
 import streamlit as st
 
 from groundwater.pipeline import RESULT_PICKLE, load_config
-from groundwater.viz.dashboard.components import _choice, _open_facade_tool
+from groundwater.viz.dashboard.components import POPOVER_PX, _choice, _open_facade_tool
 from groundwater.viz.dashboard.run import _last_timings, _run_dialog, _run_notes, _run_times, _take_run
 from groundwater.viz.dashboard.sidebar import sidebar_folder
 from groundwater.viz.dashboard.state import (_RESULT_STATE, _load_results_cached, _reference_folder, _site_dir,
@@ -31,48 +31,60 @@ VIEW_ICONS = {"3D": "view_in_ar", "절리군 지도": "map", "스테레오넷": 
 
 
 def _header(result):
-    """Status badges and the key numbers of the result on screen."""
+    """The result on screen in a line or two, so the views start near the top of the page: where it is from,
+    what to be careful about, and its key numbers. The rest -- coordinate system, the data used, what was left
+    out, the automatic settings -- opens from '분석 정보'."""
     cfg = result.config
-    badges = [f":blue-badge[:material/location_on: {cfg.get('site_name') or '현장'}]"]
-    if st.session_state.get("loaded_from"):
-        badges.append(":gray-badge[:material/history: 저장된 결과]")
-    else:
-        badges.append(":green-badge[:material/check_circle: 방금 분석]")
+    shown = [f":blue-badge[:material/location_on: {cfg.get('site_name') or '현장'}]",
+             ":gray-badge[:material/history: 저장된 결과]" if st.session_state.get("loaded_from")
+             else ":green-badge[:material/check_circle: 방금 분석]"]
+    info = []
     if cfg.get("crs"):
-        badges.append(f":gray-badge[{cfg['crs']}]")
+        info.append(f":gray-badge[좌표계 {cfg['crs']}]")
     if cfg.get("height_datum") == "orthometric":
-        badges.append(":blue-badge[:material/height: 높이 = 해발고도 (KNGeoid18)]")
-    else:
-        badges.append(":orange-badge[:material/height: 높이 = 파일 그대로 (사진측량이면 타원체고, 해발 +수십 m)]")
+        info.append(":blue-badge[:material/height: 높이 = 해발고도 (KNGeoid18)]")
+    else:                                      # a caution, not a fact to look up: it stays in sight
+        shown.append(":orange-badge[:material/height: 높이 = 파일 그대로 (사진측량이면 타원체고, 해발 +수십 m)]")
     if cfg.get("lidar_rock"):
         n = cfg["lidar_rock"].get("points_added", 0)
-        badges.append(f":violet-badge[:material/sensors: 라이다 망·식생 뒤 암반 {n / 1e6:.1f}백만 점]")
+        info.append(f":violet-badge[:material/sensors: 라이다 망·식생 뒤 암반 {n / 1e6:.1f}백만 점]")
     if (cfg.get("planar") or {}).get("folder"):
-        badges.append(":violet-badge[:material/layers: 절벽면 평행 고해상도 자료]")
+        info.append(":violet-badge[:material/layers: 절벽면 평행 고해상도 자료]")
     sec = (cfg.get("section") or {}).get("core_chainage")
     if sec:
-        badges.append(f":gray-badge[:material/join: 담당 구간 측점 {sec[0]:.0f}–{sec[1]:.0f} m · 앞뒤 겹침 처리]")
-    removed = cfg.get("vegetation_removed_fraction")
-    if removed is not None:
-        badges.append(f":green-badge[:material/park: 식생 제외 {removed * 100:.0f}%]")
-    st.markdown(" ".join(badges))
+        info.append(f":gray-badge[:material/join: 담당 구간 측점 {sec[0]:.0f}–{sec[1]:.0f} m · 앞뒤 겹침 처리]")
+    veg = cfg.get("vegetation_removed_fraction")
+    if veg is not None:
+        info.append(f":green-badge[:material/park: 식생 제외 {veg * 100:.0f}%]")
     n_patch = sum(len(d.patches) for d in result.discontinuity_sets)
     k = result.kinematics
     modes = 0 if k is None or not len(k) else k["mode"].nunique()
-    with st.container(horizontal=True):
-        st.metric("절리군", f"{len(result.discontinuity_sets)}개", f"절리면 {n_patch:,}개", delta_color="off",
-                  delta_arrow="off", border=True)
-        st.metric("입면 트레이스", f"{len(result.traces):,}개", f"총 {sum(t.length_m for t in result.traces):,.0f} m",
-                  delta_color="off", delta_arrow="off", border=True)
-        st.metric("트레이스 방향군", f"{len(result.trace_families)}개", delta_color="off", border=True)
-        st.metric("벽면 길이", f"{result.wall_frame.length:.0f} m", delta_color="off", border=True)
-        st.metric("가능한 파괴 형태", f"{modes}종", "운동학적 검토" if modes else "없음", delta_color="off",
-                  delta_arrow="off", border=True)
+    numbers = [f"절리군 **{len(result.discontinuity_sets)}개** (절리면 {n_patch:,}개)",
+               f"입면 트레이스 **{len(result.traces):,}개** (총 {sum(t.length_m for t in result.traces):,.0f} m)",
+               f"트레이스 방향군 **{len(result.trace_families)}개**",
+               f"벽면 길이 **{result.wall_frame.length:.0f} m**",
+               f"가능한 파괴 형태 **{f'{modes}종' if modes else '없음'}**"]
+    row = st.container(horizontal=True, vertical_alignment="center", key="result_header")
+    row.markdown(" ".join(shown), width="content")
+    details = row.popover("분석 정보", icon=":material/info:", type="tertiary", width=POPOVER_PX + 22)
+    row.markdown(" · ".join(numbers), width="content")      # last: on a narrow page the numbers take the second line
+    with details:
+        if info:
+            st.markdown("  \n".join(info))
+        removed = cfg.get("faces_removed") or {}
+        if any(removed.values()):
+            st.caption(f"절리가 아닌 면 제외: 벽 아래 바닥·수면 {removed.get('ground_water', 0)}개, "
+                       f"식생 위의 면 {removed.get('vegetation', 0)}개 (고급 설정에서 끄고 켬)")
+        applied = cfg.get("auto_scale_applied")
+        if applied:
+            st.caption(f"자동 설정: 점 간격 {applied['point_spacing_m'] * 100:.1f} cm → 복셀 "
+                       f"{applied['voxel_size'] * 100:.1f} cm, 법선 반경 {applied['search_radius'] * 100:.0f} cm, "
+                       f"패치 연결 {applied['link_distance'] * 100:.0f} cm, 입면 영상 "
+                       f"{applied['facade_resolution'] * 100:.1f} cm/px")
 
 
 def _main():
-    st.title("굴착사면 불연속면 · 지하수 유출통로 분석")
-    st.caption("드론 사진측량·라이다 점군에서 절리를 찾고, 유출 가능성·열화상·안정성과 그라우팅 계획을 검토합니다.")
+    top = st.container()                       # the title: on the start page only, a result has its own header line
 
     with st.sidebar:
         st.subheader(":material/folder_open: 1 · 현장 자료")
@@ -119,6 +131,8 @@ def _main():
     result = st.session_state.get("result")
     site_views = mode == "현장 폴더" and _site_has_views()
     if result is None:
+        top.title("굴착사면 불연속면 · 지하수 유출통로 분석")
+        top.caption("드론 사진측량·라이다 점군에서 절리를 찾고, 유출 가능성·열화상·안정성과 그라우팅 계획을 검토합니다.")
         st.info("왼쪽에서 현장 자료 폴더를 고르고 **분석 실행**을 누르세요. "
                 "처음에는 합성 데모 자료(data/raw/demo_site)가 선택되어 있습니다."
                 + (f" 아래 **{SITE_GROUP}** 화면(라이다 단면, 모든 구간의 결과 모음)은 분석 결과를 열지 않아도 볼 수 있습니다."
@@ -133,15 +147,6 @@ def _main():
         st.sidebar.success(f"결과 저장됨: {st.session_state['output_dir']}")
     _run_times(result)
     _header(result)
-    removed = result.config.get("faces_removed") or {}
-    if any(removed.values()):
-        st.caption(f"절리가 아닌 면 제외: 벽 아래 바닥·수면 {removed.get('ground_water', 0)}개, "
-                   f"식생 위의 면 {removed.get('vegetation', 0)}개 (고급 설정에서 끄고 켬)")
-    applied = result.config.get("auto_scale_applied")
-    if applied:
-        st.caption(f"자동 설정: 점 간격 {applied['point_spacing_m'] * 100:.1f} cm → 복셀 {applied['voxel_size'] * 100:.1f} cm, "
-                   f"법선 반경 {applied['search_radius'] * 100:.0f} cm, 패치 연결 {applied['link_distance'] * 100:.0f} cm, "
-                   f"입면 영상 {applied['facade_resolution'] * 100:.1f} cm/px")
 
     out_dir = st.session_state["output_dir"]
     if result.facade_rgb is not None and st.sidebar.button("입면 도구 열기 (수동 트레이스 · 분석 범위)",

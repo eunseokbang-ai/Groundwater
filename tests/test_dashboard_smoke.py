@@ -64,6 +64,11 @@ def _ok(app, what: str):
     assert not app.error, f"{what}: {[e.value for e in app.error]}"
 
 
+def _header_numbers(app) -> list:
+    """The key numbers in the header line of a result (page._header)."""
+    return [m.value for m in app.markdown if m.value.startswith("절리군 **")]
+
+
 def _open_every_view(app) -> list:
     """Open each view of each group in turn; returns the (group, view) pairs that were opened."""
     opened = []
@@ -83,12 +88,12 @@ def test_demo_site_run_and_every_view(demo_dashboard):
     app, site = demo_dashboard
     app.run()
     _ok(app, "first page")
-    assert not app.metric, "no result yet: the header numbers must not be shown"
+    assert app.title and not _header_numbers(app)     # no result yet: the title, not a result's header
 
     _button(app, "분석 실행").click().run()            # no earlier result: the dialog starts the run at once
     _ok(app, "analysis run")
     assert (site / RESULT_DIR / "result.pkl").exists()
-    assert len(app.metric) == 5                       # the result's header
+    assert len(_header_numbers(app)) == 1 and not app.title       # the result's header line takes the title's place
     opened = _open_every_view(app)
     assert len({g for g, _ in opened}) == 5 and len(opened) >= 15
 
@@ -99,5 +104,5 @@ def test_demo_site_run_and_every_view(demo_dashboard):
     _ok(again, "second session")
     _button(again, "이전 결과 보기").click().run()
     _ok(again, "load saved result")
-    assert len(again.metric) == 5
+    assert len(_header_numbers(again)) == 1
     assert again.session_state["loaded_from"]

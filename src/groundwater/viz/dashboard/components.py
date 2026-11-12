@@ -122,12 +122,17 @@ def _choice(label, options, col=None, **kw):
     return (col or st).segmented_control(label, options, required=True, **kw) or default
 
 
+# width of a small popover button with a three-letter label: in a horizontal row Streamlit sizes the button to less
+# than its label and cuts the label short ("자…"), so the width is given
+POPOVER_PX = 112
+
+
 def _note(summary: str, detail: str):
     """A view's explanation: one line on the page, the rest behind a small '자세히' button, so a view opens on its
     controls and figures and not on a block of text."""
     row = st.container(horizontal=True, vertical_alignment="center")
     row.caption(summary, width="content")
-    with row.popover("자세히", icon=":material/info:", type="tertiary"):
+    with row.popover("자세히", icon=":material/info:", type="tertiary", width=POPOVER_PX):
         st.markdown(detail)
 
 

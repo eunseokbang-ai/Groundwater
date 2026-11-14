@@ -2,9 +2,9 @@
 import numpy as np
 import streamlit as st
 
-from groundwater.viz.dashboard.components import (_figure_window, _note, _open_tiles_viewer, _table, _variant_picker,
-    _view3d)
-from groundwater.viz.dashboard.state import _saved, _session_cache, _site_dir, _w
+from groundwater.viz.dashboard.components import (_figure_window, _kept_choices, _note, _open_tiles_viewer, _table,
+    _variant_picker, _view3d)
+from groundwater.viz.dashboard.state import _saved, _sections_stamp, _session_cache, _site_dir, _w
 
 
 def render_site_joints(result):
@@ -25,12 +25,15 @@ def render_site_joints(result):
     _note("모든 구간의 절리면을 한 공간에 놓고, 같은 방향의 절리군은 구간이 달라도 같은 색(±20°)으로 그립니다.",
           "모든 구간의 절리면을 한 공간에 놓고, 같은 방향의 절리군은 구간이 달라도 같은 색(±20°)으로 그립니다. 관측된 면은 그 "
           "크기의 원판, **연장**은 그 원판을 몇 배로 키운 가정입니다 (굴착면에 드러난 절리는 잘려 있어 실제로는 더 멀리 "
-          "이어집니다). **연속 가능면**은 같은 절리군이고 한 평면 위(1 m, 8° 이내, 120 m 범위)에 놓인 면들의 묶음으로, "
-          "관측 자료가 직접 보여 주는 연속성입니다. 지표는 맨땅 DTM이고, 그 아래가 땅속(암반·토사)입니다.")
+          "이어집니다). **연속 가능면**은 같은 절리군이고 한 평면 위(1 m, 8° 이내, 120 m 범위)에 놓인 면들의 묶음입니다. "
+          "한 절리가 이어진 것일 수도 있지만, 면이 많은 절리군에서는 서로 다른 절리가 우연히 같은 평면에 놓이기도 하므로 "
+          "(면 2~3개짜리 묶음은 특히) **연속성의 후보**로 보세요 — 면 수가 많고 여러 구간에 걸칠수록 믿을 만하며, 확인은 "
+          "시추·물리탐사의 몫입니다. 지표는 맨땅 DTM이고, 그 아래가 땅속(암반·토사)입니다.")
     c0 = st.columns([1.2, 4], vertical_alignment="bottom")
     variant = _variant_picker(site, "sj_variant", c0[0])
     names = [n for n, _ in site3d.section_results(site, variant)]
     c = st.columns([3, 1.2, 1.2, 1.6, 1.4], vertical_alignment="bottom")
+    _kept_choices("sj_secs", names)
     pick = c[0].multiselect("구간 결과", names, default=[n for n in names if n != "현장 폴더"] or names, key="sj_secs")
     min_area = c[1].select_slider("최소 면적 (m²)", [2, 5, 10, 20, 50], **_w("sj_area", 5))
     kinds_opt = {"모든 면": ("parallel", "flat", "cross"), "벽면 평행 제외": ("flat", "cross"), "교차만": ("cross",)}
@@ -46,7 +49,7 @@ def render_site_joints(result):
                                    help="연속 가능면 중 관측된 면들이 이만큼 이상 퍼져 있는 것만 끝까지 이어 그립니다 (많으면 복잡해짐).")
     if not pick:
         return
-    key = (tuple(pick), min_area, kinds, variant)
+    key = (tuple(pick), min_area, kinds, _sections_stamp(site, variant))
 
     def build():
         F = SJ.load_faces(site, pick, float(min_area), kinds_opt[kinds], variant)
@@ -63,7 +66,7 @@ def render_site_joints(result):
     m = st.columns(4)
     m[0].metric("절리면", f"{len(F):,}")
     m[1].metric("현장 절리군", F["group"].nunique())
-    m[2].metric("연속 가능면", f"{len(C):,}", help="같은 평면 위의 면 2개 이상")
+    m[2].metric("연속 가능면 (후보)", f"{len(C):,}", help="같은 평면 위의 면 2개 이상 — 우연히 같은 평면에 놓인 것도 포함됩니다.")
     m[3].metric("여러 구간에 걸친 연속 가능면", int(C["sections"].str.contains("·").sum()) if len(C) else 0)
     # dynamic tabs: only the open one is built
     tabs = st.tabs([":material/view_in_ar: 3D", ":material/satellite_alt: 정사영상 위 절리", ":material/layers: 수평 단면",
@@ -114,6 +117,8 @@ def render_site_joints(result):
     if tabs[2].open:
         with tabs[2]:
             zlo, zhi = float(np.floor(F["z"].min())) - 20, float(np.ceil(F["z"].max())) + 10
+            if "sj_z" in st.session_state:     # kept from another site or selection: inside this one's range
+                st.session_state["sj_z"] = float(min(max(st.session_state["sj_z"], zlo), zhi))
             z0 = st.slider("표고 (m, 해발)", zlo, zhi, value=float(round(F["z"].median())), step=1.0, key="sj_z")
             bg = _session_cache("_sj_bg", (str(orthos[0]) if orthos else "", tuple(np.round(np.r_[lo, hi], 1))),
                                 lambda: LV.ortho_image(orthos[0], [lo[0], hi[0], lo[1], hi[1]], 1600) if orthos else None)
@@ -147,7 +152,7 @@ def render_site_joints(result):
                 _figure_window(V.section_figure(F, C, float(factor), a, b, ground, planes_full=full,
                                                  full_min_span=float(full_span)), "sj_section", 640,
                                "새 창에서 크게 보기 — 수직 단면 (휠 확대·축소)")
-                st.caption("회색 = 땅속 (DTM 아래). 선 = 절리면(연장 포함)이 이 수직면을 지나는 자리. 좌표는 EPSG:5186 (평면도·"
+                st.caption("회색 = 땅속 (DTM 아래). 선 = 절리면(연장 포함)이 이 수직면을 지나는 자리. 좌표는 현장 좌표계 (평면도·"
                            "라이다 단면 화면과 같음).")
     if tabs[4].open:
         with tabs[4]:

@@ -2,8 +2,8 @@
 import numpy as np
 import streamlit as st
 
-from groundwater.viz.dashboard.components import _figure_window, _note, _table, _variant_picker
-from groundwater.viz.dashboard.state import _session_cache, _site_dir, _w
+from groundwater.viz.dashboard.components import _figure_window, _kept_choices, _note, _table, _variant_picker
+from groundwater.viz.dashboard.state import _sections_stamp, _session_cache, _site_dir, _w
 
 
 def render_exposure(result):
@@ -28,14 +28,15 @@ def render_exposure(result):
     variant = _variant_picker(site, "ex_variant", c[0])
     names = [n for n, _ in site3d.section_results(site, variant)]
     c = c[1:]
+    _kept_choices("ex_secs", names)
     pick = c[0].multiselect("구간 결과", names, default=[n for n in names if n != "현장 폴더"] or names, key="ex_secs")
     par = c[1].select_slider("벽면 평행 기준 (°)", [10, 15, 20, 25, 30], **_w("ex_par", 20),
                              help="극점이 그 자리 벽면 법선과 이 각도 이내이고 경사가 수평 기준보다 크면 '벽면 평행'.")
     flat = c[2].select_slider("수평 기준: 경사 ≤ (°)", [10, 15, 20, 25, 30], **_w("ex_flat", 20))
     if not pick:
         return
-    P = _session_cache("_ex_faces", (tuple(pick), par, flat, str(site), variant),
-                       lambda: EV.load_sections(site, pick, float(par), float(flat), variant))
+    stamp = (tuple(pick), par, flat, _sections_stamp(site, variant))
+    P = _session_cache("_ex_faces", stamp, lambda: EV.load_sections(site, pick, float(par), float(flat), variant))
     if not len(P):
         st.info("절리면이 없습니다.")
         return
@@ -57,10 +58,9 @@ def render_exposure(result):
                        "발파면을 가려내기는 어렵습니다 (현장에서 발파공 흔적·풍화·충전물로 확인 필요).")
     if tabs[1].open:
         with tabs[1]:
-            st.image(_session_cache("_ex_st", (tuple(pick), par, flat, variant), lambda: EV.stereonets_png(P)),
-                     width="stretch")
+            st.image(_session_cache("_ex_st", stamp, lambda: EV.stereonets_png(P)), width="stretch")
             st.markdown("**교차·수평 면만으로 다시 찾은 방향** (면 개수 기준)")
-            R = _session_cache("_ex_refind", (tuple(pick), par, flat, variant), lambda: EV.refind(P))
+            R = _session_cache("_ex_refind", stamp, lambda: EV.refind(P))
             if len(R):
                 _table(R, width="content")
             else:

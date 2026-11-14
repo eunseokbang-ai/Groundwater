@@ -73,6 +73,29 @@ def test_table_labels_and_units(monkeypatch):
     assert list(seen["df"].columns) == list(rows[0])                                    # the data keep their names
 
 
+def _kept_page():
+    import streamlit as st
+
+    from groundwater.viz.dashboard import components
+
+    names = st.session_state["names"]
+    components._kept_choices("secs", names)
+    st.session_state["picked"] = st.multiselect("구간", names, default=names, key="secs")
+
+
+def test_choices_of_another_site_are_dropped():
+    app = AppTest.from_function(_kept_page)
+    app.session_state["names"] = ["E", "S", "W"]
+    app.run()
+    app.multiselect(key="secs").set_value(["E", "W"]).run()
+    app.session_state["names"] = ["W", "N"]                         # another site folder: 'E' is no option now
+    app.run()
+    assert not app.exception and app.session_state["picked"] == ["W"]
+    app.session_state["names"] = ["A", "B"]                         # nothing left: the default (all)
+    app.run()
+    assert not app.exception and app.session_state["picked"] == ["A", "B"]
+
+
 def _choice_page():
     import streamlit as st
 

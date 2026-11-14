@@ -318,21 +318,28 @@ def fig_seepage(result, smap) -> bytes | None:
     fig, ax = plt.subplots(figsize=(14, max(3.5, 14 * aspect + 1)))
     ax.imshow(rgb, extent=ext, alpha=0.8)
     rows, cols = smap.classes.shape
+    from matplotlib.colors import to_rgb
+
+    from .hydro import BASIS_NET, top_zones
+    from .viz.seepage_view import grade_layers
+
     ov = np.zeros((rows, cols, 4))
-    ov[smap.classes == 2] = (0.86, 0.15, 0.15, 0.55)
-    ov[smap.classes == 1] = (0.98, 0.75, 0.14, 0.35)
+    shown = [(name, m, colour) for name, m, colour in grade_layers(smap) if m.any()]
+    for name, m, colour in shown:              # the ranking under the net in its own colours
+        ov[m] = (*to_rgb(colour), 0.55 if "상" in name else 0.4)
     ax.imshow(ov, extent=[smap.u_min, smap.u_min + cols * smap.cell_m, smap.v_max - rows * smap.cell_m, smap.v_max],
               interpolation="nearest")
-    for z in smap.zones.head(10).itertuples():
+    for z in top_zones(smap.zones, 10).itertuples():
         u0, u1 = map(float, z.chainage_m.split("–"))
         v0, v1 = map(float, z.elevation_m.split("–"))
-        ax.add_patch(mpatches.Rectangle((u0, v0), u1 - u0, v1 - v0, fill=False, ec="white", lw=1.5))
+        under = getattr(z, "basis", None) == BASIS_NET
+        ax.add_patch(mpatches.Rectangle((u0, v0), u1 - u0, v1 - v0, fill=False, ec="white", lw=1.5,
+                                        ls=":" if under else "-"))
         ax.text(u0, v1 + 0.2, f"#{z.zone}", color="white", fontsize=9, weight="bold",
-                bbox=dict(fc="#b91c1c", ec="none", pad=1.5))
+                bbox=dict(fc="#581c87" if under else "#b91c1c", ec="none", pad=1.5))
     ax.set_xlim(ext[0], ext[1])
     ax.set_ylim(ext[2], ext[3])
-    ax.legend(handles=[mpatches.Patch(color=(0.86, 0.15, 0.15, 0.7), label="상 (상위 15 %)"),
-                       mpatches.Patch(color=(0.98, 0.75, 0.14, 0.6), label="중 (다음 35 %)")],
+    ax.legend(handles=[mpatches.Patch(color=(*to_rgb(colour), 0.7), label=name) for name, _, colour in shown],
               loc="upper right", fontsize=9)
     ax.set_xlabel("측점 (m)")
     ax.set_ylabel("표고 (m)")
@@ -370,6 +377,8 @@ def seepage_section(result, smap, g) -> list:
     """HTML blocks for the report."""
     parts = ["<h2>6. 지하수 유출 가능성 (표면 절리망 기준)</h2>",
              "<p class='muted'>1 m 격자마다 절리 밀도(P21), 열린 홈 깊이, 연결된 절리망 길이, 절리 옆 식생을 0~1로 환산해 가중 합산. "
+             "낙석방지망 아래의 칸은 트레이스가 망에 가려 없으므로 따로 순위를 매깁니다 (보라색): 망 뒤 암반에서 돌아온 "
+             "라이다 점으로 잰 홈 깊이 하나가 기준이고, 맨 암반의 등급과 같은 잣대로 비교할 수 없습니다. "
              "실제 유출 확인은 열화상·관측 자료로 해야 합니다.</p>"]
     if smap is not None:
         parts += [_img(fig_seepage(result, smap)), smap.zones.head(15).to_html(index=False)]

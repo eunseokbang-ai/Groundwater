@@ -2,7 +2,7 @@
 import pandas as pd
 import streamlit as st
 
-from groundwater.viz.dashboard.components import (_choice, _map_chart, _session_tiles_input, _table,
+from groundwater.viz.dashboard.components import (_choice, _export, _map_chart, _session_tiles_input, _table,
     _tiles_scene_button, _view3d)
 from groundwater.viz.dashboard.state import _fragment, _range_state, _result_key, _session_cache, _w
 
@@ -23,12 +23,16 @@ def render_kinematics(result):
 
     fr0 = float(result.config.get("kinematics", {}).get("friction_deg", 30))
     st.caption("운동학적으로 '가능한지'만 보는 선별 검토(Markland 시험)입니다. 점착력·수압·절리 연장성·블록 크기는 "
-               "고려하지 않습니다. 절리군은 측정된 방향(평균 경사·경사방향) 그대로 판정합니다 (일반적인 Markland 방식).")
+               "고려하지 않습니다. 평사투영과 그 비율(%)은 **절리면 하나하나**를, 5 m 구간별 검토와 구역 지도는 "
+               "**절리군의 평균 방향**을 시험하므로 둘의 결과가 다를 수 있습니다.")
     joints = _kin_joints(result)
     c = st.columns([1, 1, 2.2], vertical_alignment="bottom")
     phi = c[0].slider("마찰각 φ (°)", 20.0, 45.0, step=1.0, **_w("kin_phi", fr0))
     lat = c[1].slider("측방 한계 (± °)", 10.0, 30.0, step=5.0, **_w("kin_lat", 20.0),
                       help="평면·전도파괴: 절리 경사방향이 벽면 경사방향(전도는 그 반대)에서 이 각도 안일 때")
+    if abs(phi - fr0) > 1e-6:
+        st.caption(f":material/info: 분석 설정의 마찰각은 {fr0:g}°입니다. 화면 위 머리글의 '가능한 파괴 형태'와 보고서는 "
+                   f"그 값으로 계산한 것이고, 이 화면의 그림·표만 지금 고른 {phi:g}°를 씁니다.")
     ws = result.face_windows
     if not ws:
         st.info("벽면 방향을 구하지 못했습니다.")
@@ -43,7 +47,7 @@ def render_kinematics(result):
         step = round(bounds[1] - bounds[0], 1) if len(bounds) > 1 else 5.0     # the windows' width (5 m)
         key = _range_state("kin_range", lo, hi, (lo, min(lo + 2 * step, hi)))
         lo_s, hi_s = st.session_state[key]                        # on the window boundaries, at least one window
-        lo_s = lo + round((lo_s - lo) / step) * step
+        lo_s = max(lo, min(lo + round((lo_s - lo) / step) * step, hi - step))       # room for one window at the end
         hi_s = max(lo_s + step, lo + round((hi_s - lo) / step) * step)
         st.session_state[key] = (float(lo_s), float(min(hi_s, hi)))
         u_range = st.slider("측점 구간 (m) — 5 m 구간 경계 단위", lo, hi, step=step, key=key)
@@ -59,7 +63,7 @@ def render_kinematics(result):
     st.image(png, width="stretch")
     n_faces = counts["평면파괴"]["total"]
     st.caption("하반구 등면적 투영. 평면·전도파괴는 절리면 극점, 쐐기파괴는 서로 다른 절리군 면 쌍의 교선(무작위 "
-               "최대 4,000쌍)으로 봅니다. 색 영역에 든 점(테두리)이 그 파괴가 가능한 방향입니다."
+               "최대 4,000쌍, 서로 이웃한 면인지는 보지 않음)으로 봅니다. 색 영역에 든 점(테두리)이 그 파괴가 가능한 방향입니다."
                + (f" 이 구간 절리면 {n_faces}개." if u_range else "")
                + (" 절리면이 30개 미만이면 비율은 참고만 하세요." if u_range and n_faces < 30 else ""))
     with st.expander("5 m 구간별 평사투영 비교 (구간마다 그 구간의 벽면 × 그 구간의 절리면)"):
@@ -79,11 +83,15 @@ def render_kinematics(result):
             _table(k.groupby(["mode", "joints"]).size().reset_index(name="구간 수"))
             st.markdown("**구간마다 가능한 파괴**")
             _table(k)
+            _export(k, "kinematic_windows.csv", "kin_windows_csv")
         if result.face_windows:
             st.markdown("**구간별 벽면**")
             _table(pd.DataFrame(result.face_windows).round(1))
 
     st.markdown("##### :material/map: 파괴 가능 구역 지도")
+    if result.facade_depth is None:
+        st.info("이 결과에는 입면 깊이 지도가 없어 (색 정보가 없는 점군) 구역 지도를 만들 수 없습니다.")
+        return
     st.caption("벽면을 셀로 나누어 셀마다 그 자리의 벽면 방향(입면 깊이 지도를 블록 크기로 평활해 구함)과 근처에서 "
                "관측된 절리군으로 같은 시험을 합니다. 위의 구간 평균과 달리 돌출부·오목부·오버행이 각자 판정됩니다.")
     c = st.columns([1, 1, 1.3, 1.2, 2.2], vertical_alignment="bottom")
@@ -99,13 +107,16 @@ def render_kinematics(result):
     shown = [m for m in K.MODES if m in shown]
     veg_thr = (result.config.get("vegetation") or {}).get("exg_threshold", 0.06)
     kkey = (_result_key(), phi, lat, cell, smooth, local, noveg)
-    kmap = _session_cache("_kin_map", kkey, lambda: K.kinematic_map(
-        result, joints, phi, lat, cell, smooth, 2.0 if local else None, noveg, veg_thr))
+    with st.spinner("셀마다 벽면 방향과 절리군을 시험하는 중 (설정을 바꾸면 다시 계산, 30초 안팎)..."):
+        kmap = _session_cache("_kin_map", kkey, lambda: K.kinematic_map(
+            result, joints, phi, lat, cell, smooth, 2.0 if local else None, noveg, veg_thr))
     if not shown:
         st.info("표시할 파괴 형태를 하나 이상 고르세요.")
         return
     _map_chart(KV.map_figure(result, kmap, shown), "kin_map")
-    _table(KV.summary(kmap))
+    summary = KV.summary(kmap)
+    _table(summary)
+    _export(summary, "kinematic_zones_summary.csv", "kin_summary_csv")
     st.caption(f"암면 셀 {int(kmap.valid.sum())}개 ({kmap.valid.sum() * kmap.cell_m ** 2:.0f} m²), 그중 오버행 "
                f"{int((kmap.overhang & kmap.valid).sum())}개 (벽면 경사 90°로 봄). 원인 절리군의 면적은 그 절리군 때문에 "
                "가능한 셀의 면적입니다.")

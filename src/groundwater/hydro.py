@@ -18,6 +18,17 @@
    Neighbouring "상" cells (8-connected, at least 2) form zones, numbered by their mean score (#1 = highest)
    and reported with chainage/elevation/world coordinates.
 
+   Under rockfall netting none of this holds as it stands: the traces hidden by the net are left out of the
+   analysis (P21, connectivity and wetness are ~0 there), and the facade depth is the front of everything --
+   the net, a median 25-78 cm before the rock on the Iksan walls -- so its "grooves" are not the rock's.
+   Cells mostly under the net are therefore ranked on their own (`under_net="lidar"`), by the one indicator
+   that can be measured there: the groove depth of the analysed rock surface, i.e. of the LiDAR returns
+   from behind the net (`rock_recess`). On bare rock, where both can be had, that measure follows the dense
+   one closely (Spearman 0.87-0.93 per section, the top 15 % of cells overlapping 4.6-5.2 x chance). Its
+   "상" is the top 15 % of the netted cells: the two rankings are separate and their scores not comparable.
+   (Tried and left out: the density of boundaries between LiDAR joint faces as a stand-in for P21 -- on bare
+   rock it does not follow the photo traces, Spearman 0.0-0.2.)
+
 2. Grouting inputs (`grouting_inputs`), from the joint sets (3D sets + trace-only families with an
    orientation):
 
@@ -49,6 +60,11 @@ from .discontinuity.vegetation import vegetation_mask
 WEIGHTS = {"p21": 0.3, "openness": 0.25, "connectivity": 0.25, "wetness": 0.2}
 CLASS_HIGH, CLASS_MID = 85.0, 50.0           # percentiles of the score over rock cells
 WORK_RES = 0.02                              # m, grid for the openness / wetness rasters
+ROCK_RES = 0.08                              # m, grid of the analysed rock surface (rock_recess)
+ROCK_KERNEL_M = 0.3                          # m, grooves of the rock surface up to this width
+NET_SHARE = 0.3                              # a cell with this share under netting is ranked with the netted cells
+UNDER_NET = ("lidar", "skip", "front")       # seepage_potential(under_net=...)
+BASIS_BARE, BASIS_NET = "맨 암반", "망 아래 (라이다)"
 MIN_CURTAIN_PLUNGE = 45                      # deg, shallowest curtain hole considered practical to drill and grout
 
 
@@ -61,6 +77,9 @@ class SeepageMap:
     rock: np.ndarray      # (rows, cols) bool, cells with enough rock to be scored
     classes: np.ndarray   # (rows, cols) int8: 2 = 상, 1 = 중, 0 = 하, -1 = not scored
     zones: pd.DataFrame
+    net: np.ndarray | None = None    # (rows, cols) bool: scored cells under netting, ranked on their own (None: no
+    #                                  such ranking -- under_net "skip" / "front", or a result without a net mask)
+    under_net: str = "front"         # how the cells under netting were treated (UNDER_NET)
 
 
 def _scale(x: np.ndarray, mask: np.ndarray) -> np.ndarray:
@@ -123,11 +142,91 @@ def trace_networks(traces, touch_m: float = 0.1) -> np.ndarray:
     return total
 
 
+def net_share(result, u_min: float, v_max: float, rows: int, cols: int, cell_m: float):
+    """(rows, cols) share of each cell under rockfall netting (the analysis's surface mask), or None when the
+    result has no such mask."""
+    from .discontinuity.cleaning import MASK_NET, mask_codes
+
+    mask = getattr(result, "surface_mask", None)
+    if mask is None:
+        return None
+    k = 5                                      # samples per cell side
+    uu = u_min + (np.arange(cols * k) + 0.5) * cell_m / k
+    vv = v_max - (np.arange(rows * k) + 0.5) * cell_m / k
+    U, V = np.meshgrid(uu, vv)
+    net = (mask_codes(mask, U.ravel(), V.ravel()) & MASK_NET) > 0
+    return net.reshape(rows, k, cols, k).mean(axis=(1, 3))
+
+
+def _rock_surface(result, res: float = ROCK_RES, kernel_m: float = ROCK_KERNEL_M):
+    """The analysed rock over the facade's extent, in wall coordinates: (depth raster -- w of the front-most
+    analysis point per `res` pixel, NaN without one, top row = highest elevation, small holes filled from their
+    neighbours -- and its groove depth: the closing with a `kernel_m` ellipse minus the surface). The analysis
+    points are the rock itself: under netting they are the LiDAR returns from behind the net, where the facade
+    depth image is the net. Kept on the result object: it takes seconds and does not depend on cell or weights."""
+    t = result.facade_depth.transform
+    px = abs(t.a)
+    u_min, v_max = t.c, t.f
+    H, W = result.facade_depth.array.shape[1:]
+    key = (res, kernel_m, id(result.point_cloud))
+    cache = result.__dict__.get("_rock_surface_cache")
+    if cache and cache[0] == key:
+        return cache[1]
+    h, w = max(1, int(np.ceil(H * px / res))), max(1, int(np.ceil(W * px / res)))
+    surf = np.full((h, w), np.nan, np.float32)
+    pts = np.asarray(result.point_cloud.points) if result.point_cloud is not None else np.zeros((0, 3))
+    if len(pts):
+        uvw = result.wall_frame.to_wall(pts)
+        col = ((uvw[:, 0] - u_min) / res).astype(int)
+        row = ((v_max - uvw[:, 1]) / res).astype(int)
+        ok = (col >= 0) & (col < w) & (row >= 0) & (row < h)
+        order = np.argsort(uvw[ok, 2])                             # the front-most point last: it stays
+        surf[row[ok][order], col[ok][order]] = uvw[ok, 2][order]
+        has = np.isfinite(surf)
+        num = cv2.blur(np.where(has, surf, 0).astype(np.float32), (5, 5))
+        den = cv2.blur(has.astype(np.float32), (5, 5))
+        surf = np.where(has, surf, np.where(den > 0.15, num / np.maximum(den, 1e-6), np.nan)).astype(np.float32)
+    ok = np.isfinite(surf)
+    rec = np.zeros((h, w), np.float32)
+    if ok.any():
+        base = np.where(ok, surf, np.nanmedian(surf)).astype(np.float32)
+        k = max(3, int(round(kernel_m / res)) | 1)
+        rec = cv2.morphologyEx(base, cv2.MORPH_CLOSE, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k))) - base
+        rec = np.where(ok, np.clip(rec, 0, 0.5), 0).astype(np.float32)
+    result.__dict__["_rock_surface_cache"] = (key, (surf, rec))
+    return surf, rec
+
+
+def rock_recess(result, cell_m: float, u_min: float, v_max: float, rows: int, cols: int,
+                res: float = ROCK_RES, kernel_m: float = ROCK_KERNEL_M):
+    """Per cell (the grid of seepage_potential, which starts at the facade's corner `u_min`, `v_max`): the mean
+    groove depth (m) of the analysed rock surface -- as the openness of the facade depth, but measured on the
+    rock (_rock_surface) -- and the share of the cell that surface covers."""
+    surf, rec = _rock_surface(result, res, kernel_m)
+    ok = np.isfinite(surf)
+    if not ok.any():
+        return np.zeros((rows, cols)), np.zeros((rows, cols))
+    h, w = surf.shape
+    cr = np.minimum((np.arange(h) * res / cell_m).astype(int), rows - 1)
+    cc = np.minimum((np.arange(w) * res / cell_m).astype(int), cols - 1)
+    idx = (cr[:, None] * cols + cc[None, :]).ravel()
+    s = np.bincount(idx, weights=rec.ravel(), minlength=rows * cols)
+    n = np.bincount(idx, weights=ok.ravel().astype(float), minlength=rows * cols)
+    tot = np.bincount(idx, minlength=rows * cols)
+    return (s / np.maximum(n, 1)).reshape(rows, cols), (n / np.maximum(tot, 1)).reshape(rows, cols)
+
+
 def seepage_potential(result, cell_m: float = 1.0, weights: dict | None = None, recess_kernel_m: float = 0.15,
-                      exg_threshold: float = 0.06, touch_m: float = 0.1, min_plane_cover: float = 0.15
-                      ) -> SeepageMap | None:
+                      exg_threshold: float = 0.06, touch_m: float = 0.1, min_plane_cover: float = 0.15,
+                      under_net: str = "lidar") -> SeepageMap | None:
+    """`under_net`: what to do with the cells mostly under rockfall netting (see the module text) --
+    "lidar": ranked on their own by the groove depth of the analysed rock (the default);
+    "skip": not scored; "front": scored with the bare rock from the front surface, as before this option
+    (kept to compare with earlier results)."""
     if result.facade_rgb is None:
         return None
+    if under_net not in UNDER_NET:
+        raise ValueError(f"under_net must be one of {UNDER_NET}")
     weights = {**WEIGHTS, **(weights or {})}
     t = result.facade_rgb.transform
     px = abs(t.a)
@@ -201,21 +300,68 @@ def seepage_potential(result, cell_m: float = 1.0, weights: dict | None = None, 
     strip_b = strip.astype(bool) & vw
     wet, _ = to_cells(vegw.astype(float), strip_b)
 
+    # the cells under netting: out of the bare-rock ranking, and (under_net="lidar") into one of their own
+    net = None
+    share = net_share(result, u_min, v_max, rows, cols, cell_m) if under_net != "front" else None
+    if share is not None:
+        netted = share >= NET_SHARE
+        if under_net == "lidar":
+            recess, cover = rock_recess(result, cell_m, u_min, v_max, rows, cols)
+            net = netted & (cover >= 0.4) & (plane_cover >= min_plane_cover)
+            net &= in_core(u_min + (np.arange(cols) + 0.5) * cell_m, result.config)[None, :]
+            openness = np.where(net, recess, openness)             # there the groove depth is the rock's
+        rock &= ~netted
+
     layers = {"p21": p21, "openness": openness, "connectivity": conn, "wetness": wet}
     scaled = {n: _scale(a, rock) for n, a in layers.items()}
     score = sum(weights[n] * scaled[n] for n in scaled) / sum(weights.values())
     score = np.where(rock, score, np.nan)
     classes = np.full((rows, cols), -1, np.int8)
+
+    def grade(cells, values):
+        hi, mid = np.percentile(values[cells], [CLASS_HIGH, CLASS_MID])
+        classes[cells] = np.where(values[cells] >= hi, 2, np.where(values[cells] >= mid, 1, 0))
+
     if rock.any():
-        hi, mid = np.percentile(score[rock], [CLASS_HIGH, CLASS_MID])
-        classes[rock] = np.where(score[rock] >= hi, 2, np.where(score[rock] >= mid, 1, 0))
+        grade(rock, score)
+    if net is not None and net.any():          # one indicator, scaled and graded among the netted cells only
+        score = np.where(net, _scale(openness, net), score)
+        grade(net, score)
+        rock = rock | net
+    else:
+        net = None
     layers = {**layers, "score": score}
-    zones = _zones(result, classes, layers, cell_m, u_min, v_max)
-    return SeepageMap(cell_m, u_min, v_max, layers, rock, classes, zones)
+    zones = _zones(result, classes, layers, cell_m, u_min, v_max, None if net is None else ~net)
+    if net is not None:
+        under = _zones(result, classes, layers, cell_m, u_min, v_max, net)
+        if len(under):                         # numbered after the bare-rock zones; nothing but the groove depth there
+            under["zone"] += len(zones)
+            under[["p21", "network_m", "plants_along_joints"]] = np.nan
+            under["trace_families"] = ""
+        zones = pd.concat([zones.assign(basis=BASIS_BARE), under.assign(basis=BASIS_NET)], ignore_index=True)
+    return SeepageMap(cell_m, u_min, v_max, layers, rock, classes, zones, net, under_net)
 
 
-def _zones(result, classes, layers, cell_m, u_min, v_max) -> pd.DataFrame:
-    n, lab = cv2.connectedComponents((classes == 2).astype(np.uint8), connectivity=8)
+def top_zones(zones: pd.DataFrame, n: int = 10) -> pd.DataFrame:
+    """The `n` best zones of each ranking (bare rock, under the net): the ones a figure boxes and numbers."""
+    if "basis" not in zones or not len(zones):
+        return zones.head(n)
+    return pd.concat([z.head(n) for _, z in zones.groupby("basis", sort=False)], ignore_index=True)
+
+
+def netting_cells(result, smap, min_share: float = NET_SHARE):
+    """(rows, cols) bool: the scored cells of `smap` lying under rockfall netting (the analysis's surface mask),
+    or None when the result has no such mask. For a map made with under_net="front": there these cells are
+    scored with the bare rock although no trace is mapped under the net."""
+    rows, cols = smap.classes.shape
+    share = net_share(result, smap.u_min, smap.v_max, rows, cols, smap.cell_m)
+    return None if share is None else smap.rock & (share >= min_share)
+
+
+def _zones(result, classes, layers, cell_m, u_min, v_max, among=None) -> pd.DataFrame:
+    """The zones of neighbouring '상' cells, numbered by score; `among`: only the cells of this mask."""
+    high = (classes == 2) if among is None else (classes == 2) & among
+    n, lab = cv2.connectedComponents(high.astype(np.uint8), connectivity=8)
     rows = []
     depth = result.facade_depth
     fam_of = {id(t): f for f in result.trace_families for t in f.members}
@@ -298,8 +444,12 @@ def joint_sets_for_flow(result) -> pd.DataFrame:
                          "note": f"방향 추정 신뢰도 {f.orientation_quality}, 간격은 입면 겉보기 값"})
     df = pd.DataFrame(rows)
     if len(df):
+        # a value that could not be measured is filled in, and said so: it must not read as a measurement
+        no_s, no_p = df["spacing_m"].isna(), df["persistence_m"].isna()
         df["spacing_m"] = df["spacing_m"].fillna(df["spacing_m"].median() if df["spacing_m"].notna().any() else 2.0)
         df["persistence_m"] = df["persistence_m"].fillna(1.0)
+        for missing, what in ((no_s, "간격"), (no_p, "연장성")):
+            df.loc[missing, "note"] = [f"{n}, {what} 채움 (측정 안 됨)".lstrip(", ") for n in df.loc[missing, "note"]]
         df["aperture_rel"] = 1.0
     return df
 
@@ -323,10 +473,12 @@ def snow_tensor(sets: pd.DataFrame):
 
 
 def crossing_weights(sets: pd.DataFrame) -> np.ndarray:
-    """Weight of one crossing of each set: its transmissivity ~ aperture^3 (normalised). Not the flow share:
-    that already holds 1 / spacing, which hole_frequency applies through the crossing count."""
+    """Weight of one crossing of each set: its transmissivity ~ aperture^3, with mean 1 -- so with equal apertures
+    hole_frequency is the plain number of joints crossed per metre, and with different ones the open sets count
+    for more. Not the flow share: that already holds 1 / spacing, which hole_frequency applies through the
+    crossing count."""
     a3 = np.array([float(r.aperture_rel) ** 3 for r in sets.itertuples()])
-    return a3 / max(a3.sum(), 1e-12)
+    return a3 * len(a3) / max(a3.sum(), 1e-12)
 
 
 def _frequencies(sets: pd.DataFrame, weights, trend, plunge) -> np.ndarray:

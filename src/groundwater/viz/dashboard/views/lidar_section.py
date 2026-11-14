@@ -6,7 +6,7 @@ import pandas as pd
 import streamlit as st
 
 from groundwater import site_folder
-from groundwater.viz.dashboard.components import _choice, _figure_window, _note
+from groundwater.viz.dashboard.components import _choice, _figure_window, _keep_going, _note
 from groundwater.viz.dashboard.state import _session_cache, _site_dir, _w
 
 
@@ -33,6 +33,12 @@ def _analysis_cloud(folder: str, mtime: float):
         t = pd.read_csv(d / "discontinuity_sets.csv")
         names = {int(r.set_id): f"Set {int(r.set_id)} {r.mean_dip:.0f}°/{r.mean_dip_direction:03.0f}°" for r in t.itertuples()}
     return pts, sets, names
+
+
+@st.cache_resource(show_spinner=False)
+def _index_builds() -> dict:
+    """The LiDAR indexes being built in this server process: file -> fraction done."""
+    return {}
 
 
 def _section_polygons(site: Path):
@@ -78,11 +84,28 @@ def render_lidar_section(result):
     if idx is None:
         st.warning(f"{las.name}은 아직 색인이 없습니다. 처음 한 번 파일 전체를 읽어 색인(작은 평면도와 위치 목록)을 만듭니다 "
                    f"({las.stat().st_size / 1e9:.0f} GB: 약 {max(1, round(las.stat().st_size / 6e9))}분). 그다음부터 단면은 1~2초입니다.")
+        builds = _index_builds()
+        if str(las) in builds:                 # started earlier; a click elsewhere took its progress bar away
+            st.info(f"색인을 만드는 중입니다 ({builds[str(las)] * 100:.0f}%). 끝나면 이 화면에서 단면을 볼 수 있습니다.",
+                    icon=":material/hourglass_top:")
+            st.button("상태 확인", icon=":material/refresh:", key="ls_index_poll")
+            return
         if st.button("색인 만들기", icon=":material/build:"):
             bar = st.progress(0.0, "라이다 색인 만드는 중...")
-            LS.build_index(las, lambda f, msg: bar.progress(min(1.0, f), msg))
-            _lidar_index.clear()
-            st.rerun()
+            show = _keep_going(lambda f, msg: bar.progress(min(1.0, f), msg))
+
+            def progress(f, msg):              # the job goes on to its end when the page is run again meanwhile
+                builds[str(las)] = float(f)
+                show(f, msg)
+
+            builds[str(las)] = 0.0
+            try:
+                LS.build_index(las, progress)
+            finally:
+                builds.pop(str(las), None)
+                _lidar_index.clear()
+            if show.shown():
+                st.rerun()
         return
     half = c[1].select_slider("단면 두께 (± cm)", [2, 5, 10, 20], **_w("ls_half", 5)) / 100
     show_cls = c[2].toggle("프로그램 판정 겹치기", **_w("ls_cls", True),
@@ -106,11 +129,15 @@ def render_lidar_section(result):
             from groundwater.facade.frame import build_wall_frame
 
             folder = site_folder.section_dir(site, sec if secs else None)
-            poly, pit = read_wall_line(folder / WALL_LINE_NAME)
-            P = np.asarray(poly, float)
-            frame = build_wall_frame(np.column_stack([P, np.zeros(len(P))]), poly, pit)
-            a, b = LS.perpendicular_line(frame, u, front, back)
-            st.session_state["ls_line"] = line = (tuple(a), tuple(b))
+            if not (folder / WALL_LINE_NAME).exists():
+                st.warning(f"벽면 기준선({WALL_LINE_NAME})이 없어 벽에 직각인 단면을 정할 수 없습니다. 왼쪽의 '벽면 기준선 "
+                           "그리기'로 만들거나, 평면도에 선을 그리세요.")
+            else:
+                poly, pit = read_wall_line(folder / WALL_LINE_NAME)
+                P = np.asarray(poly, float)
+                frame = build_wall_frame(np.column_stack([P, np.zeros(len(P))]), poly, pit)
+                a, b = LS.perpendicular_line(frame, u, front, back)
+                st.session_state["ls_line"] = line = (tuple(a), tuple(b))
     elif mode == modes[2]:
         a0, b0 = line if line else ((0.0, 0.0), (0.0, 0.0))
         cc = st.columns(5, vertical_alignment="bottom")
@@ -169,8 +196,8 @@ def render_lidar_section(result):
         kinds = LS.return_kind(slab["ret"], slab["nret"])
         owner, ofolder = LS.owning_section(site, (a + b) / 2)
         res_dir = ofolder / site_folder.OUTPUT_DIRNAME
-        ac = (_analysis_cloud(str(res_dir), (res_dir / "result.pkl").stat().st_mtime)
-              if (show_cls or show_an) and (res_dir / "result.pkl").exists() else None)
+        saved = (res_dir / "result.pkl").stat().st_mtime if (res_dir / "result.pkl").exists() else None
+        ac = _analysis_cloud(str(res_dir), saved) if (show_cls or show_an) and saved else None
         cls = None
         if show_cls:
             def classify():
@@ -184,7 +211,9 @@ def render_lidar_section(result):
                     lo, hi = slab["xyz"][:, :2].min(0) - 30.0, slab["xyz"][:, :2].max(0) + 30.0
                     near = ac[0][np.all((ac[0][:, :2] >= lo) & (ac[0][:, :2] <= hi), axis=1)]
                 return LS.classify(slab["xyz"], frame, find_ground(site), near)
-            cls = _session_cache("_ls_cls", (key, str(ofolder), "dtm", "outside", ac is not None), classify)
+            # (with the result's file time: a section analysed again is judged with its new points)
+            cls = _session_cache("_ls_cls", (key, str(ofolder), "dtm", "outside", saved if ac is not None else None),
+                                 classify)
         analysis, set_names = None, None
         if show_an:
             if ac is not None:

@@ -9,8 +9,8 @@ import streamlit as st
 
 from groundwater import report
 from groundwater.facade.region import core_chainage
-from groundwater.viz.dashboard.state import (_PLANAR_WIDGETS, _SRC_ROOT, _clean_path, _flow_sets, _reference_folder,
-    _remember, _result_key, _saved, _session_cache)
+from groundwater.viz.dashboard.state import (_PLANAR_WIDGETS, _SRC_ROOT, _clean_path, _flow_sets, _option,
+    _reference_folder, _remember, _result_key, _saved, _session_cache)
 
 
 MAP_HEIGHT = 880                       # px; the map views get as much of the screen as they can use
@@ -54,8 +54,11 @@ COLUMNS = {
     "est_dip_direction": ("추정 경사방향 (°)", None, "트레이스들의 3차원 방향에서 추정한 값. 벽면이 평평하면 정할 수 없습니다."),
     "orientation_quality": "방향 추정 품질", "apparent_spacing_m": ("입면 간격 (m)", "%.2f"),
     # seepage zones
-    "zone": "구역", "score": ("점수", "%.2f"), "p21": ("절리 밀도 P21", "%.2f"),
-    "openness_cm": ("열린 정도 (cm)", "%.1f", "입면 깊이에서 홈의 평균 깊이"),
+    "zone": "구역", "score": ("점수", "%.2f", "그 순위 안에서 0~1로 환산한 값 (맨 암반과 망 아래는 서로 다른 순위)"),
+    "basis": ("기준", None, "맨 암반: 네 지표의 가중 합산. 망 아래 (라이다): 망 뒤 암반의 홈 깊이 하나, 망 아래 칸끼리의 순위."),
+    "p21": ("절리 밀도 P21", "%.2f"),
+    "openness_cm": ("열린 정도 (cm)", "%.1f", "맨 암반: 입면 깊이에서 폭 15 cm 이하 홈의 평균 깊이. 망 아래: 망 뒤 암반(라이다)에서 "
+                                             "폭 30 cm 이하 홈의 평균 깊이. 개구폭을 잰 값이 아닙니다."),
     "network_m": ("절리망 길이 (m)", "%.0f", "서로 닿는 트레이스로 이어진 절리망의 길이"),
     "plants_along_joints": ("절리 옆 식생", "%.2f", "트레이스 양옆 10 cm 띠 안의 초록 화소 비율 (0~1)"),
     "trace_families": "트레이스 방향군", "sets_on_face": "암면의 절리군",
@@ -120,6 +123,53 @@ def _choice(label, options, col=None, **kw):
     elif st.session_state.get(key) not in options:
         st.session_state[key] = default
     return (col or st).segmented_control(label, options, required=True, **kw) or default
+
+
+def _keep_going(show):
+    """`show` (the progress display of a long job inside a view) made safe against a click elsewhere: Streamlit
+    stops a script at its next display call when the page is run again, which would drop a job of minutes with
+    nothing saved. The wrapped call shows nothing more from that moment and the job runs to its end (as the
+    analysis run does, run._run_analysis). `.shown()` tells whether this script is still the one on screen."""
+    from streamlit.runtime.scriptrunner import RerunException, StopException
+
+    shown = [True]
+
+    def call(*args, **kwargs):
+        if shown[0]:
+            try:
+                show(*args, **kwargs)
+            except (RerunException, StopException):
+                shown[0] = False
+
+    call.shown = lambda: shown[0]
+    return call
+
+
+def _kept_choices(key: str, options) -> None:
+    """Before a multiselect with `key`: drop remembered choices that are not among `options` any more (another
+    site folder, another result variant) -- Streamlit refuses a state holding a value that is no option."""
+    cur = st.session_state.get(key)
+    if cur is not None:
+        kept = [v for v in cur if v in options]
+        if kept:
+            st.session_state[key] = kept
+        else:
+            del st.session_state[key]          # nothing left: the widget's default
+
+
+def _export(df, file_name: str, key: str):
+    """The same two buttons under every table that is a deliverable: download as CSV, and save into the result
+    folder. The file keeps the names of the data (the screen labels are for the screen), in UTF-8 with a mark so
+    Excel reads the Korean text."""
+    data = pd.DataFrame(df)
+    out = st.session_state.get("output_dir")
+    row = st.container(horizontal=True, vertical_alignment="center")
+    row.download_button("CSV 내려받기", data.to_csv(index=False).encode("utf-8-sig"), file_name, "text/csv",
+                        icon=":material/download:", key=f"{key}_dl")
+    if out and row.button("결과 폴더에 저장", icon=":material/save:", key=f"{key}_save"):
+        path = Path(out) / file_name
+        data.to_csv(path, index=False, encoding="utf-8-sig")
+        row.caption(f"저장: {path}", width="content")
 
 
 # width of a small popover button with a three-letter label: in a horizontal row Streamlit sizes the button to less
@@ -375,7 +425,7 @@ def _tiles_path_input(mesh_path, planar_dir, key_suffix: str = ""):
 def _session_tiles_input(key: str):
     """The tiled-model path field of the view with key prefix `key`, guessed from this session's mesh and
     planar-data folders (_tiles_path_input)."""
-    return _tiles_path_input(st.session_state.get("mesh_path", ""), st.session_state.get("planar_dir", ""), f"_{key}")
+    return _tiles_path_input(_option("mesh_path", ""), _option("planar_dir", ""), f"_{key}")
 
 
 def _tiles_scene_button(result, tiles, key: str, file_name: str, title: str, overlays, sets=None, joints=None,

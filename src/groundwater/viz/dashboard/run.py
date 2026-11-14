@@ -1,5 +1,5 @@
 """The analysis run: the dialog that asks and shows the stages, the run record that survives a click during the
-run, and the stage times."""
+run (and a reload of the page), and the stage times."""
 from pathlib import Path
 
 import pandas as pd
@@ -14,6 +14,14 @@ STAGE_NAMES = {"load": "점군 읽기", "frame": "기준선·분석 범위", "au
                "normals": "법선·곡률", "joints": "절리면·절리군",
                "facade": "입면 영상 (원본 전체 점)", "planar": "고해상도 평면 자료 (색·트레이스)",
                "cleaning": "식생 위의 면 제외", "kinematics": "안정성 검토", "save": "결과 저장"}
+
+
+@st.cache_resource(show_spinner=False)
+def _jobs() -> dict:
+    """The run records of this server process, by output folder. A browser session keeps its own record in Session
+    State; this one lets a reloaded page (a new session) find a run that is still going, instead of offering to
+    start a second one on the same folder."""
+    return {}
 
 
 def _dur(seconds: float) -> str:
@@ -99,6 +107,7 @@ def _run_analysis(cfg: dict, last: dict) -> bool:
     for k in _RESULT_STATE:
         st.session_state.pop(k, None)
     st.session_state["_run_job"] = job
+    _jobs()[_folder_id(out_dir)] = job
     shown = [True]
 
     def tell(fn):
@@ -120,51 +129,146 @@ def _run_analysis(cfg: dict, last: dict) -> bool:
 
     try:
         result = run_pipeline(cfg, progress=progress)
-        progress("save", "kinematics", result.timings.get("kinematics", 0.0))
-        t_save = time.perf_counter()
+    except Exception:
+        job.update(state="error", error=traceback.format_exc(), finished=time.time())
+        tell(lambda: box.update(label="분석이 중단되었습니다", state="error", expanded=True))
+        return shown[0]
+    except BaseException:                      # the script was stopped from outside: the record must not stay 'running'
+        job.update(state="error", error="분석이 밖에서 중단되었습니다.\n" + traceback.format_exc(), finished=time.time())
+        raise
+    # The save is apart from the analysis: when it fails (a result CSV open in Excel, a full disk) the analysis of
+    # up to an hour is kept on screen and can be saved again -- it is not thrown away with the error.
+    progress("save", "kinematics", result.timings.get("kinematics", 0.0))
+    t_save = time.perf_counter()
+    try:
         save_results(result, out_dir)
         result.timings["save"] = round(time.perf_counter() - t_save, 1)
     except Exception:
-        job.update(state="error", error=traceback.format_exc())
-        tell(lambda: box.update(label="분석이 중단되었습니다", state="error", expanded=True))
-        return shown[0]
+        job["save_error"] = traceback.format_exc()
     job.update(state="done", result=result, finished=time.time())
     tell(lambda: box.update(label=f"분석 완료 — 모두 {_dur(job['finished'] - job['started'])}", state="complete",
                             expanded=True))
     return shown[0]
 
 
-def _take_run() -> bool:
-    """The run record of this session (_run_analysis): a finished run's result is put on screen, a failed one's
-    error shown, a running one announced (the page of a run that lost its display). Returns whether one is running."""
+def _hm(t: float) -> str:
     import datetime
 
+    return f"{datetime.datetime.fromtimestamp(t):%H:%M}"
+
+
+POLL_SECONDS = 10
+
+
+@st.fragment(run_every=POLL_SECONDS)
+def _running_banner():
+    """The line about a run that lost its display. It looks again every few seconds, and when the run has ended the
+    whole page is run once more, so the result (or the error) comes on screen without a click."""
     job = st.session_state.get("_run_job")
+    if not job or job["state"] != "running":
+        st.rerun()
+    with st.container(border=True):
+        st.markdown(f":material/progress_activity: **분석이 진행 중입니다** ({_hm(job['started'])} 시작) — 지금 단계: "
+                    f"{STAGE_NAMES.get(job['stage'], job['stage'])} ({_hm(job['since'])}부터). 끝나면 결과가 저장되고 "
+                    "이 화면에 바로 열립니다 (다른 결과를 보고 있으면 여는 단추가 나옵니다).")
+
+
+def _close_run():
+    job = st.session_state.pop("_run_job", None)
+    if job and _jobs().get(_folder_id(job["out_dir"])) is job:
+        del _jobs()[_folder_id(job["out_dir"])]
+
+
+def _open_run():
+    st.session_state["_run_open"] = True
+
+
+def _take_run(out_dir=None) -> bool:
+    """The run record of this session (_run_analysis): a finished run's result is put on screen, a failed one's
+    error shown until it is closed, a running one announced (the page of a run that lost its display). A page
+    opened again while a run to `out_dir` (the output folder chosen now) is going takes that run's record.
+    Returns whether one is running."""
+    job = st.session_state.get("_run_job")
+    if not job and out_dir:
+        job = _jobs().get(_folder_id(out_dir))
+        if job and job["state"] in ("running", "done"):
+            st.session_state["_run_job"] = job
+        else:
+            job = None
     if not job:
         return False
     if job["state"] == "running":
-        hm = lambda t: f"{datetime.datetime.fromtimestamp(t):%H:%M}"  # noqa: E731
-        with st.container(border=True, horizontal=True, vertical_alignment="center"):
-            st.markdown(f":material/progress_activity: **분석이 진행 중입니다** ({hm(job['started'])} 시작) — 지금 단계: "
-                        f"{STAGE_NAMES.get(job['stage'], job['stage'])} ({hm(job['since'])}부터). 끝나면 결과가 저장되고, "
-                        "'상태 확인'을 누르면 열립니다.")
-            st.button("상태 확인", icon=":material/refresh:", key="run_poll")
+        _running_banner()
         return True
-    del st.session_state["_run_job"]
-    if job["state"] == "error":
-        st.error("분석이 오류로 중단되었습니다.")
-        st.code(job.get("error", ""))
+    if job["state"] == "error":                # stays until closed: the next click must not wipe the reason
+        st.error(f"분석이 **{STAGE_NAMES.get(job['stage'], job['stage'])}** 단계에서 오류로 중단되었습니다 "
+                 f"({_hm(job['started'])} 시작, {_dur(job.get('finished', job['since']) - job['started'])} 뒤). "
+                 "저장된 이전 결과는 그대로 있습니다 ('이전 결과 보기').", icon=":material/error:")
+        with st.expander("오류 내용 (문의할 때 이 내용을 함께 보내 주세요)"):
+            st.code(job.get("error", ""))
+        st.button("닫기", key="run_error_close", on_click=_close_run)
         return False
     if job["folder"] != st.session_state.get("_settings_folder"):       # another site or section was opened meanwhile
+        _close_run()
         st.success(f"분석이 끝나 저장되었습니다: {job['out_dir']} — 그 폴더를 열고 '이전 결과 보기'로 불러오세요.")
+        return False
+    if st.session_state.get("result") is not None and not st.session_state.pop("_run_open", False):
+        # another result was opened during the run: it is not replaced under the user's eyes
+        with st.container(border=True, horizontal=True, vertical_alignment="center"):
+            st.markdown(f":material/check_circle: **새 분석이 끝나 저장되었습니다** ({_hm(job['finished'])}). "
+                        "지금 화면은 그 전에 연 결과입니다.")
+            st.button("새 결과 열기", type="primary", key="run_open", on_click=_open_run)
+        return False
+    _close_run()
+    result = job.pop("result", None)           # None: another browser tab on this folder took it first
+    if result is None:
+        st.success(f"분석이 끝나 저장되었습니다: {job['out_dir']} — '이전 결과 보기'로 불러오세요.")
         return False
     for k in _RESULT_STATE:
         st.session_state.pop(k, None)
-    st.session_state["result"] = job.pop("result")
+    st.session_state["result"] = result
     st.session_state["output_dir"] = job["out_dir"]
     st.session_state["result_key"] = ("run", job["out_dir"], job["finished"])
     st.session_state["loaded_from"] = None
+    if job.get("save_error"):
+        st.session_state["_unsaved"] = job["save_error"]
     return False
+
+
+def _other_run(out_dir=None):
+    """A run of this server process that is still going on another output folder (None if there is none): two
+    analyses at once would share the memory and the processor of one PC."""
+    mine = _folder_id(out_dir) if out_dir else None
+    return next((j for k, j in _jobs().items() if j["state"] == "running" and k != mine), None)
+
+
+def _save_again():
+    """Callback of '다시 저장': the result on screen into its folder once more."""
+    import traceback
+
+    try:
+        save_results(st.session_state["result"], st.session_state["output_dir"])
+        st.session_state.pop("_unsaved", None)
+        st.session_state["_saved_now"] = True
+    except Exception:  # noqa: BLE001 -- shown on the page, with the reason
+        st.session_state["_unsaved"] = traceback.format_exc()
+
+
+def _unsaved_banner():
+    """The result on screen could not be written to its folder: say why, and offer to save it again."""
+    if st.session_state.pop("_saved_now", False):
+        st.success(f"결과를 저장했습니다: {st.session_state.get('output_dir')}", icon=":material/save:")
+    err = st.session_state.get("_unsaved")
+    if not err or st.session_state.get("result") is None:
+        return
+    reason = err.strip().splitlines()[-1]
+    st.error("분석은 끝났지만 **결과를 폴더에 저장하지 못했습니다** — 지금 화면의 결과는 이 창을 닫으면 사라집니다. "
+             "결과 폴더의 파일(CSV 등)이 Excel 같은 프로그램에 열려 있으면 닫고, 디스크 공간을 확인한 뒤 다시 저장하세요. "
+             f"이전에 저장된 결과 파일은 그대로입니다.\n\n`{reason}`", icon=":material/save:")
+    with st.container(horizontal=True):
+        st.button("다시 저장", type="primary", icon=":material/save:", key="run_save_again", on_click=_save_again)
+        with st.popover("오류 내용", type="tertiary"):
+            st.code(err)
 
 
 def _run_times(result):

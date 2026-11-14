@@ -5,10 +5,11 @@ import streamlit as st
 
 from groundwater.pipeline import RESULT_PICKLE, load_config
 from groundwater.viz.dashboard.components import POPOVER_PX, _choice, _open_facade_tool
-from groundwater.viz.dashboard.run import _last_timings, _run_dialog, _run_notes, _run_times, _take_run
+from groundwater.viz.dashboard.run import (_last_timings, _other_run, _run_dialog, _run_notes, _run_times, _take_run,
+    _unsaved_banner)
 from groundwater.viz.dashboard.sidebar import sidebar_folder
-from groundwater.viz.dashboard.state import (_RESULT_STATE, _load_results_cached, _reference_folder, _site_dir,
-    _store_settings)
+from groundwater.viz.dashboard.state import (_RESULT_STATE, _SRC_ROOT, _clean_path, _load_results_cached,
+    _reference_folder, _site_dir, _store_settings)
 from groundwater.viz.dashboard.views.cloud3d import render_3d_view
 from groundwater.viz.dashboard.views.exposure import render_exposure
 from groundwater.viz.dashboard.views.grouting import render_grouting
@@ -83,6 +84,25 @@ def _header(result):
                        f"{applied['facade_resolution'] * 100:.1f} cm/px")
 
 
+def _yaml_config(path: str):
+    """(configuration, None) from a YAML file, or (None, what is wrong with it)."""
+    import yaml
+
+    if not Path(path).is_file():
+        return None, "설정 파일을 찾을 수 없습니다."
+    try:
+        cfg = load_config(path)
+    except (OSError, UnicodeDecodeError, yaml.YAMLError) as e:
+        return None, f"설정 파일을 읽을 수 없습니다: {e}"
+    if not isinstance(cfg, dict) or not isinstance(cfg.get("paths"), dict):
+        return None, "설정 파일에 paths 항목이 없습니다 (configs/example_site.yaml 참고)."
+    return cfg, None
+
+
+def _load_prev():
+    st.session_state["_load_prev"] = True
+
+
 def _main():
     top = st.container()                       # the title: on the start page only, a result has its own header line
 
@@ -95,16 +115,21 @@ def _main():
         if mode == "현장 폴더":
             cfg = sidebar_folder()
         else:
-            config_path = st.text_input("설정 파일 경로", value="configs/demo_site.yaml")
-            cfg = load_config(config_path) if Path(config_path).is_file() else None
-            if cfg is None:
-                st.error("설정 파일을 찾을 수 없습니다.")
+            config_path = _clean_path(st.text_input("설정 파일 경로",
+                                                    value=str(_SRC_ROOT.parent / "configs" / "demo_site.yaml")))
+            cfg, problem = _yaml_config(config_path)
+            if problem:
+                st.error(problem)
         st.subheader(":material/play_circle: 2 · 분석")
         run_clicked = st.button("분석 실행", type="primary", icon=":material/play_arrow:", disabled=cfg is None,
                                 width="stretch")
         if mode == "현장 폴더" and cfg is not None:
             _store_settings()
-        prev = st.session_state.get("prev_result_dir") if mode == "현장 폴더" else None
+        if mode == "현장 폴더":
+            prev = st.session_state.get("prev_result_dir")
+        else:                                  # the result this configuration would replace
+            out = (cfg or {}).get("paths", {}).get("output_dir", "data/processed/output")
+            prev = out if cfg and (Path(out) / RESULT_PICKLE).exists() else None
         load_clicked = False
         if prev:
             import datetime
@@ -112,18 +137,29 @@ def _main():
             load_clicked = st.button(f"이전 결과 보기 ({when:%Y-%m-%d %H:%M})", icon=":material/history:", width="stretch",
                                      help="이 폴더에 저장된 마지막 분석 결과를 다시 계산하지 않고 불러옵니다.")
 
-    running = _take_run()                      # a finished run's result comes on screen here
+    out_now = (cfg.get("paths") or {}).get("output_dir") if cfg else None
+    running = _take_run(out_now)               # a finished run's result comes on screen here
+    other = _other_run(out_now) if run_clicked else None
     if run_clicked and running:
         st.toast("분석이 이미 진행 중입니다.", icon=":material/hourglass_top:")
+    elif other:                                # (a page opened again elsewhere must not start a second pipeline)
+        st.warning(f"다른 분석이 진행 중입니다 ({other['out_dir']}). 끝난 뒤에 실행하세요.", icon=":material/hourglass_top:")
     elif run_clicked:                          # asks first when a result would be replaced
         out_new = cfg["paths"].get("output_dir", "data/processed/output")
         _run_dialog(cfg, _run_notes(prev, out_new), _last_timings(out_new))
-    elif load_clicked:
-        for k in _RESULT_STATE:
-            st.session_state.pop(k, None)
+    elif prev and (load_clicked or st.session_state.pop("_load_prev", False)):
         with st.spinner("저장된 결과를 불러오는 중..."):
             mtime = (Path(prev) / RESULT_PICKLE).stat().st_mtime
-            st.session_state["result"] = _load_results_cached(prev, mtime)
+            try:
+                loaded = _load_results_cached(prev, mtime)
+            except Exception as e:  # noqa: BLE001 -- a file from another version, a cut-off save: say so, keep the page
+                loaded = None
+                st.error(f"저장된 결과를 읽을 수 없습니다 ({type(e).__name__}: {e}). 프로그램이 바뀌기 전에 저장된 결과일 수 "
+                         "있습니다 — **분석 실행**으로 다시 만드세요.", icon=":material/error:")
+        if loaded is not None:
+            for k in _RESULT_STATE:
+                st.session_state.pop(k, None)
+            st.session_state["result"] = loaded
             st.session_state["result_key"] = ("saved", prev, mtime)
             st.session_state["output_dir"] = prev
             st.session_state["loaded_from"] = prev
@@ -133,6 +169,14 @@ def _main():
     if result is None:
         top.title("굴착사면 불연속면 · 지하수 유출통로 분석")
         top.caption("드론 사진측량·라이다 점군에서 절리를 찾고, 유출 가능성·열화상·안정성과 그라우팅 계획을 검토합니다.")
+        if prev and not running:               # the usual start: look at what was analysed, not analyse again
+            import datetime
+
+            when = datetime.datetime.fromtimestamp((Path(prev) / RESULT_PICKLE).stat().st_mtime)
+            with st.container(border=True, horizontal=True, vertical_alignment="center"):
+                st.markdown(f":material/history: 이 폴더에는 **{when:%Y-%m-%d %H:%M}**에 저장된 분석 결과가 있습니다.")
+                st.button("저장된 결과 열기", type="primary", icon=":material/folder_open:", on_click=_load_prev,
+                          key="load_prev_main")
         st.info("왼쪽에서 현장 자료 폴더를 고르고 **분석 실행**을 누르세요. "
                 "처음에는 합성 데모 자료(data/raw/demo_site)가 선택되어 있습니다."
                 + (f" 아래 **{SITE_GROUP}** 화면(라이다 단면, 모든 구간의 결과 모음)은 분석 결과를 열지 않아도 볼 수 있습니다."
@@ -146,12 +190,18 @@ def _main():
     else:
         st.sidebar.success(f"결과 저장됨: {st.session_state['output_dir']}")
     _run_times(result)
+    _unsaved_banner()
     _header(result)
 
     out_dir = st.session_state["output_dir"]
     if result.facade_rgb is not None and st.sidebar.button("입면 도구 열기 (수동 트레이스 · 분석 범위)",
                                                          width="stretch"):
-        url = _open_facade_tool(out_dir, st.session_state.get("site_folder"))
+        # the range drawn there is saved beside the section's other files, where the next analysis reads it
+        from groundwater import site_folder
+
+        site = st.session_state.get("site_folder")
+        url = _open_facade_tool(out_dir, str(site_folder.section_dir(site, st.session_state.get("_section")))
+                                if site and mode == "현장 폴더" else site)
         st.sidebar.markdown(f"새 탭이 안 열리면 [여기]({url}). 저장 후 **분석 실행**을 다시 누르세요.")
 
     has_ref = _reference_folder(result) is not None
@@ -176,7 +226,9 @@ def _site_has_views() -> bool:
     from groundwater.viz import site3d
 
     site = _site_dir()
-    return site.is_dir() and (bool(st.session_state.get("_site_lidar")) or bool(site3d.section_results(site)))
+    if not _clean_path(st.session_state.get("site_folder", "")) or not site.is_dir():       # an empty field is no folder
+        return False
+    return bool(st.session_state.get("_site_lidar")) or bool(site3d.section_results(site))
 
 
 def _show_views(result, groups: dict):
@@ -190,13 +242,16 @@ def _show_views(result, groups: dict):
                  REFERENCE_VIEW: lambda r: render_reference_overlays(r, _reference_folder(r))}
     names = list(groups)
     group = names[0]
+    last = st.session_state.setdefault("_nav_last", {})
     if len(names) > 1:                         # (the site group alone, without a result, is not a choice to keep)
-        cur = st.session_state.get("nav_group")
+        # the group row is not drawn on the start page, so its state is gone when another result is opened: the
+        # group that was open is kept beside the views (None is not a group name)
+        cur = st.session_state.get("nav_group", last.get(None))
         st.session_state["nav_group"] = cur if cur in names else names[0]       # assigned in every run, see _w
         group = st.segmented_control("화면 묶음", names, key="nav_group", label_visibility="collapsed", required=True,
                                      format_func=lambda g: f":material/{GROUP_ICONS[g]}: {g}") or names[0]
+        last[None] = group
     views = groups[group]
-    last = st.session_state.setdefault("_nav_last", {})
     key = f"nav_view_{group}"
     # the state of a view row that was not drawn (another group was open) is gone: start it from the group's last view
     cur = st.session_state.get(key, last.get(group))

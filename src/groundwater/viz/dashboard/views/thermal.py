@@ -5,8 +5,8 @@ import numpy as np
 import streamlit as st
 
 from groundwater import report
-from groundwater.viz.dashboard.components import (_map_chart, _note, _popup_button, _session_tiles_input, _table,
-    _tiles_scene_button, _view_server)
+from groundwater.viz.dashboard.components import (_keep_going, _map_chart, _note, _popup_button, _session_tiles_input,
+    _table, _tiles_scene_button, _view_server)
 from groundwater.viz.dashboard.state import (_chainage_range, _clean_path, _range_state, _reg_crs, _result_key,
     _saved, _session_cache, _w)
 
@@ -17,6 +17,9 @@ def render_thermal(result):
     from groundwater.facade import thermal as TH
     from groundwater.viz import thermal_view as TV
 
+    if result.facade_rgb is None or result.facade_depth is None:
+        st.info("이 결과에는 입면 영상이 없어 (색 정보가 없는 점군) 열화상을 벽면 좌표에 겹쳐 볼 수 없습니다.")
+        return
     _note("벽면 평행으로 내보낸 RGB·열화상 정사영상을 같은 벽면 좌표(측점 × 표고)에 겹쳐 봅니다.",
           "벽면 평행으로 내보낸 RGB·열화상 정사영상을 같은 벽면 좌표(측점 × 표고)에 겹쳐 봅니다. 열화상 폴더에 온도 "
           "정사영상(`*temperature*.tif`, °C — `scripts/dji_rjpeg_to_temperature.py` → `metashape_swap_to_temperature.py`)이 "
@@ -55,7 +58,8 @@ def render_thermal(result):
     if cc[1].button("열화상 정합 다시 하기" if reg_t else "열화상 정합 실행 (2~3분)", icon=":material/join_inner:",
                     width="stretch", key="th_register"):
         with st.status("열화상 DEM을 RGB DEM에 정합하는 중...", expanded=True) as box:
-            reg_t = TH.register(rgb_dir, th_dir, result.wall_frame, crs, progress=box.write)
+            # (the registration runs to its end and is saved even when a click elsewhere takes this box away)
+            reg_t = TH.register(rgb_dir, th_dir, result.wall_frame, crs, progress=_keep_going(box.write))
             box.update(label="정합 완료", state="complete")
         st.session_state.pop("_th_imgs", None)
     if reg_t is None:
@@ -84,11 +88,35 @@ def render_thermal(result):
                + "새 창에서는 불투명도 슬라이더로 바로 바꾸고, '좌우 비교'로 경계선 왼쪽은 RGB, 오른쪽은 열화상으로 볼 수 있습니다.")
     if st.toggle(":material/view_in_ar: 타일 모델에 열화상 표시", **_w("th_tiles", False)):
         st.caption("위 측점 구간의 열화상(온도 정사영상이 있으면 °C)을 실사 타일 모델 표면에 붙여 새 탭에서 엽니다. 열화상 TIFF로 "
-                   "만든 타일 모델(IcSan_thermal_tiled_relative_inferno.3tz)을 고르면 그 자체 색은 상대 온도, 붙인 이미지는 °C "
+                   "만든 타일 모델(팔레트 색 .3tz)을 고르면 그 자체 색은 상대 온도, 붙인 이미지는 °C "
                    "입니다 (그 화면의 '표면에 붙인 이미지'에서 켜고 끔. 인터넷 연결 필요: CesiumJS).")
         _tiles_scene_button(result, _session_tiles_input("th"), "th", "thermal_scene_tiles.json", "열화상 — 타일 모델",
                             lambda: [TV.tiles_overlay(result, pair)])
     _thermal_anomalies(result, th_dir, crs, stamp)
+
+
+GROUNDWATER_C = (13.0, 16.0)       # shallow groundwater through the year (assumed; leachate may differ)
+
+
+def _rock_temperature_note(an):
+    """With temperatures (not palette colours): which sign of anomaly can be seepage, from how the rock's own
+    temperature at the flight compares with groundwater."""
+    if an.params.get("values") != "temperature":
+        st.caption(":material/info: 팔레트 색(상대값)이라 암반의 실제 온도를 알 수 없습니다 — 어느 쪽 이상이 유출 후보인지는 "
+                   "촬영 시각·날씨로 판단하세요 ('자세히' 참고). 온도 정사영상(°C)을 넣으면 여기서 알려 줍니다.")
+        return
+    rock = an.index[np.isfinite(an.z)]
+    if not rock.size:
+        return
+    med, (lo, hi) = float(np.nanmedian(rock)), GROUNDWATER_C
+    if med < lo - 2:
+        verdict = f"지하수(약 {lo:.0f}~{hi:.0f} °C 가정)보다 차가우므로 **따뜻한 이상**이 유출 후보입니다"
+    elif med > hi + 2:
+        verdict = f"지하수(약 {lo:.0f}~{hi:.0f} °C 가정)보다 따뜻하므로 **차가운 이상**이 유출 후보입니다 (젖은 면의 증발 냉각과 구분 필요)"
+    else:
+        verdict = (f"지하수(약 {lo:.0f}~{hi:.0f} °C 가정)와 비슷해 **온도 차만으로는 유출을 가리기 어렵습니다** — 더 춥거나 "
+                   "더운 때의 촬영이 필요합니다")
+    st.caption(f":material/thermostat: 분석한 암반의 온도 중앙값 **{med:.1f} °C** — {verdict}.")
 
 
 def _thermal_anomalies(result, th_dir, crs, stamp):
@@ -100,9 +128,15 @@ def _thermal_anomalies(result, th_dir, crs, stamp):
     st.markdown("##### :material/thermostat: 열화상 이상 부분 × 절리")
     _note("맨 암반의 온도를 주변 몇 m의 평균·편차와 비교해 뚜렷이 차갑거나 따뜻한 부분을 뽑습니다.",
           "온도(°C, 없으면 팔레트 상대 지수)를 맨 암반(식생·낙석방지망·평탄 지면 제외)에서 주변 몇 m의 평균·편차와 비교해 "
-          "뚜렷이 차갑거나 따뜻한 부분을 뽑습니다. 지하수(연중 약 13~16 °C)는 저녁·밤·겨울에는 암반보다 따뜻하게, 햇빛 받는 "
-          "여름 낮에는 차갑게 보입니다 (익산 10/21 열화상은 16:55~17:39 저녁 촬영 → 따뜻한 이상이 유출 후보). 그늘·벌어진 "
-          "틈도 차갑게 보이므로 사진에서 훨씬 어두운 것은 '그늘 의심'으로 표시합니다.")
+          "뚜렷이 차갑거나 따뜻한 부분을 뽑습니다.\n\n"
+          "**어느 쪽이 유출 후보인지는 촬영 때 암반 온도에 달려 있습니다.** 지하수(연중 약 13~16 °C로 가정 — 침출수는 "
+          "다를 수 있으니 실측 권장)는 그보다 차가운 암반(겨울, 새벽, 종일 그늘)에서는 따뜻하게, 더 뜨거운 암반(햇빛 받는 "
+          "여름 낮)에서는 차갑게 보입니다. 암반 온도가 그 사이면 부호만으로는 가릴 수 없습니다.\n\n"
+          "**유출이 아닌데 이상으로 잡히는 것**: 흐르지 않고 젖기만 한 면은 증발로 언제나 차갑고, 그늘·벌어진 틈도 차갑게 "
+          "보입니다 (사진에서 훨씬 어두운 것은 '그늘 의심'으로 표시). 반대로 해 진 뒤에는 움푹한 틈이 식는 속도가 느려 "
+          "따뜻하게 남습니다 — 따뜻한 이상에는 이런 표시가 없으니 사진과 함께 보세요.\n\n"
+          "**이상 부분은 어느 벽에서나 나옵니다**: 주변보다 기준(표준편차 배) 이상 다른 곳을 뽑는 방식이라, 개수 자체는 "
+          "유출의 증거가 아닙니다. 절리·유출 가능성 '상' 칸과 겹치는 정도, 비 온 뒤 반복 촬영에서도 남는지를 보세요.")
     c = st.columns(4)
     win = c[0].select_slider("비교 범위 (m)", [3.0, 5.0, 8.0], **_w("ta_win", 5.0),
                              help="이 크기 안의 평균·편차와 비교 (사진마다 조금씩 바뀐 색 범위를 상쇄)")
@@ -111,12 +145,16 @@ def _thermal_anomalies(result, th_dir, crs, stamp):
     near = c[3].select_slider("절리 근접 거리 (m)", [0.2, 0.3, 0.5], **_w("ta_near", 0.3))
     seep = st.session_state.get("_seep")                    # the seepage map of the 유출 가능성 view, if computed
     smap = seep[0] if seep else None
+    seep_key = st.session_state.get("_seep_key") if smap is not None else "default"
     if smap is None:
-        smap = _session_cache("_ta_smap", _result_key(), lambda: hydro.seepage_potential(result))
+        with st.spinner("유출 가능성 계산 중 (기본 가중치)..."):
+            smap = _session_cache("_ta_smap", _result_key(), lambda: hydro.seepage_potential(result))
+    exg = (result.config.get("vegetation") or {}).get("exg_threshold", 0.06)        # the analysis's own threshold
     with st.spinner("열화상 이상 부분을 찾는 중 (30초 안팎)..."):
-        an = _session_cache("_ta", (_result_key(), th_dir, stamp, win, zmin, amin, near),
-                            lambda: TA.detect(result, th_dir, crs, win, zmin, amin, near, smap=smap))
+        an = _session_cache("_ta", (_result_key(), th_dir, crs, stamp, win, zmin, amin, near, seep_key, exg),
+                            lambda: TA.detect(result, th_dir, crs, win, zmin, amin, near, smap=smap, exg_threshold=exg))
     sm = an.summary
+    _rock_temperature_note(an)
     cold, warm = sm.get("차가움") or {}, sm.get("따뜻함") or {}
     m = st.columns(4)
     m[0].metric("차가운 이상", f"{cold.get('n', 0)}곳", f"{cold.get('area_m2', 0)} m²", delta_color="off")
@@ -125,7 +163,17 @@ def _thermal_anomalies(result, th_dir, crs, stamp):
         col.metric(f"{kind} 이상 중 절리 {near:g} m 이내", f"{d.get('near_share', 0) * 100:.0f}%",
                    f"암면 전체 {sm['near_share_rock'] * 100:.0f}% 대비 {d.get('enrichment', 0):.1f}배"
                    + (f" (그늘 의심 제외 {d.get('enrichment_not_shadow', 0):.1f}배)" if kind == "차가운" else ""),
-                   delta_color="off", help="1배보다 크면 이상 부분이 우연보다 절리 가까이에 몰려 있다는 뜻")
+                   delta_color="off", help="이상 부분의 면적 중 절리 트레이스 가까이에 있는 비율을 암면 전체의 그 비율과 "
+                                           "비교한 값입니다. 1배보다 뚜렷이 크면 이상 부분이 절리 가까이에 몰려 있다는 뜻이지만, "
+                                           "면적 기준이라 큰 이상 하나가 값을 좌우할 수 있고 통계 검정은 아닙니다.")
+    grades = [f"{kind} 이상 면적의 {d['high_grade_share'] * 100:.0f}% (암면 전체의 '상' 비율 대비 "
+              f"{d['high_grade_enrichment']:.1f}배)" for kind, d in (("차가운", cold), ("따뜻한", warm))
+              if "high_grade_enrichment" in d]
+    if grades:
+        st.caption("유출 가능성 **'상'** 칸과 겹치는 정도: " + " · ".join(grades) + ". 1배보다 뚜렷이 크면 절리 분석으로 "
+                   "꼽은 곳과 열화상이 같은 곳을 가리킨다는 뜻입니다 (면적 기준이라 큰 이상 하나가 값을 좌우할 수 있음). "
+                   + ("등급은 '유출 가능성' 화면의 가중치·격자를 썼습니다." if seep_key != "default" else
+                      "등급은 기본 가중치로 계산했습니다 ('유출 가능성' 화면을 열면 그 화면의 설정을 씁니다)."))
     bg, ext = _session_cache("_seep_facade", _result_key(), lambda: report.facade_preview(result, 6000))
     _map_chart(TV.anomaly_figure(result, an, bg, ext), "thermal_anom")
     st.caption(f"분석한 맨 암반 {sm['rock_m2']:,.0f} m². 파랑 = 차가운 이상, 빨강 = 따뜻한 이상, 노란 선 = 절리 트레이스. "

@@ -6,8 +6,8 @@ import pandas as pd
 import streamlit as st
 
 from groundwater import hydro, report
-from groundwater.viz.dashboard.components import (_choice, _map_chart, _note, _open_tiles_viewer, _planar_input,
-    _table, _tiles_path_input, _view3d)
+from groundwater.viz.dashboard.components import (_choice, _export, _map_chart, _note, _open_tiles_viewer,
+    _planar_input, _table, _tiles_path_input, _view3d)
 from groundwater.viz.dashboard.state import (_chainage_range, _clean_path, _flow_sets, _fragment, _reference_folder,
     _reg_crs, _remember, _result_key, _saved, _session_cache, _w, _w_clamped)
 
@@ -20,17 +20,27 @@ def _site_mesh_cached(path: str, mtime: float, result_key, hide_veg: bool, _resu
 
 
 def render_grouting(result):
-    _note("드론 절리망으로 만든 **그라우팅 설계 초기 입력값**입니다 — 투수 '방향'과 '비율'만 의미가 있습니다.",
+    _note("드론 절리망으로 만든 **그라우팅 설계 초기 입력값**입니다 — 절리의 방향과 간격만으로 정한 상대값입니다.",
           "드론 절리망으로 만든 **그라우팅 설계 초기 입력값**입니다. 개구폭을 모르는 동안은 모든 절리군에 같은 개구폭을 "
-          "가정하므로 투수 '방향'과 '비율'만 의미가 있습니다. 간격·연장성·개구폭은 아래 표에서 고칠 수 있고, "
-          "시추·루전 시험 결과가 나오면 그 값으로 바꾸세요.")
+          "가정하므로, 투수 주축과 기여도는 **절리의 방향과 간격(빈도)만으로 정한 상대값**입니다. 실제 투수는 개구폭의 "
+          "세제곱에 비례해서 (2배 열리면 8배) 한 절리군이 더 열려 있으면 결과가 크게 달라집니다. 간격·연장성·개구폭은 아래 "
+          "표에서 고칠 수 있고, 시추·루전 시험 결과가 나오면 그 값으로 바꾸세요. 표의 '비고'에 '채움'이라고 적힌 값은 "
+          "측정하지 못해 넣은 값입니다.")
     base = _flow_sets(result)
     if not len(base):
         st.info("절리군이 없습니다.")
         return
     base.insert(0, "use", True)
+    # The editor keeps its edits only while it is on the page. So the table as last edited is kept beside it, and
+    # is what the editor starts from when the view is opened again (until then its own state holds the edits).
+    key = f"gr_sets_{abs(hash(str(_result_key())))}"
+    kept = st.session_state.get("_gr_sets_edit")
+    if key not in st.session_state and kept and kept[0] == key:
+        st.session_state["_gr_sets_base"] = kept
+    start = st.session_state.get("_gr_sets_base")
+    start = start[1] if start and start[0] == key else base
     edited = st.data_editor(
-        base, width="stretch", hide_index=True, key=f"gr_sets_{abs(hash(str(_result_key())))}",
+        start, width="stretch", hide_index=True, key=key,
         disabled=["name", "dip", "dip_direction", "source", "note"],
         column_config={"use": st.column_config.CheckboxColumn("포함"),
                        "name": st.column_config.TextColumn("절리군"),
@@ -41,20 +51,28 @@ def render_grouting(result):
                        "aperture_rel": st.column_config.NumberColumn("상대 개구폭", min_value=0.0, step=0.1, format="%.2f"),
                        "dip": st.column_config.NumberColumn("경사 (°)", format="%.0f"),
                        "dip_direction": st.column_config.NumberColumn("경사방향 (°)", format="%.0f")})
+    st.session_state["_gr_sets_edit"] = (key, edited)
+    if not edited.equals(base):
+        st.button("표를 처음 값으로", icon=":material/restart_alt:", on_click=_reset_sets, args=(key,), key="gr_sets_reset",
+                  help="간격·연장성·상대 개구폭과 '포함'을 분석 결과의 값으로 되돌립니다.")
     sets = edited[edited["use"]].drop(columns=["use"])
     if not len(sets):
         st.warning("절리군을 하나 이상 포함하세요.")
         return
+    if any(sets["note"].str.contains("벽면과 평행")):         # here, by the table it is about, not under the 3D scene
+        st.warning("벽면과 평행한 절리군의 간격은 벽면이 계단식으로 물러나는 간격일 수 있어 투수 기여도를 과대평가할 수 있습니다. "
+                   "현장 판단으로 간격을 고치거나 '포함'을 끄고 비교해 보세요.")
     seg = result.wall_frame.vertices
     d = seg[-1] - seg[0]
     wall_az = float(np.degrees(np.arctan2(d[0], d[1])) % 360)
-    mode = _choice("차수 커튼", ["없음", f"벽면 기준선과 평행 (가상, 방위 {wall_az:.0f}°)", "방위각 직접 입력"])
+    curtains = {"none": "없음", "wall": f"벽면 기준선과 평행 (가상, 방위 {wall_az:.0f}°)", "manual": "방위각 직접 입력"}
+    mode = _choice("차수 커튼", list(curtains), format_func=curtains.get, **_w("gr_curtain", "none", site=True))
     az = None
-    if mode.startswith("벽면"):
+    if mode == "wall":
         az = wall_az
-    elif mode.startswith("방위각"):
-        st.session_state.setdefault("curtain_az", float(wall_az))
-        az = st.number_input("커튼 방위각 (°, 평면에서 커튼선 방향)", 0.0, 360.0, step=1.0, key="curtain_az")
+    elif mode == "manual":
+        az = st.number_input("커튼 방위각 (°, 평면에서 커튼선 방향)", 0.0, 360.0, step=1.0,
+                             **_w("curtain_az", float(wall_az), site=True))
 
     _, principal, share = hydro.snow_tensor(sets)
     sets = sets.assign(flow_share=np.round(share, 3))
@@ -67,14 +85,15 @@ def render_grouting(result):
     if in_plane:
         c[2].metric("커튼 면 안 최적", f"{in_plane['trend']:.0f}° / {in_plane['plunge']:.0f}°",
                     f"{in_plane['joints_per_m'] * 10:.1f} 개/10 m")
-    st.caption("'개/10 m' = 공 10 m당 만나는 절리 수(투수 기여도로 가중). 연직공보다 크게 높으면 경사공을 검토할 근거입니다.")
+    st.caption("'개/10 m' = 공 10 m당 만나는 절리 수 (절리군 간격과 공의 각도로 계산). 상대 개구폭을 다르게 넣으면 열린 "
+               "절리군을 더 크게 셉니다 (개구폭의 세제곱 가중, 평균 1). 연직공보다 크게 높으면 경사공을 검토할 근거입니다.")
     left, right = st.columns([1, 1])
     with left:
         st.image(report.fig_hole_orientation(g))
     with right:
         st.markdown("**투수 주축** (1 = 물이 가장 잘 흐르는 방향)")
         _table(principal)
-        st.markdown("**절리군별 투수 기여도**")
+        st.markdown("**절리군별 투수 기여도** (개구폭이 같으면 절리 빈도의 비중)")
         _table(sets[["name", "flow_share"]])
         st.markdown("**최적 방향 공 / 연직공이 만나는 절리 (10 m당)**")
         a = pd.DataFrame(hydro.per_set_frequency(sets, best["trend"], best["plunge"]))
@@ -86,16 +105,22 @@ def render_grouting(result):
         st.subheader("차수 커튼 검토")
         cc = hydro.curtain_check(sets, az)
         cut_help = ("연직공을 그 간격으로 한 줄 뚫었을 때 그 절리군의 절리 하나가 공에 걸릴 확률 "
-                    "(커튼 면 위 트레이스 중 공을 가로지르는 길이 / 공 간격)")
+                    "(커튼 면 위 트레이스 중 공을 가로지르는 길이 / 공 간격). 연장성이 벽면에 드러난 길이라서 "
+                    "실제 절리가 더 길면 확률도 더 큽니다 (하한값).")
         _table(cc, {c: (f"걸릴 확률 — 공 간격 {c[7:-1]} m", "%.2f", cut_help) for c in cc.columns if c.startswith("cut_at_")})
+        _export(cc, "grouting_curtain_check.csv", "gr_curtain_csv")
         conductive = sets[sets["flow_share"] >= 0.1]
         ext = float(np.percentile(conductive["persistence_m"], 90)) if len(conductive) else None
         if ext:
-            st.caption(f"커튼 끝 연장 권장: 전도성 절리군 연장성 p90 = {ext:.1f} m 이상 (드론 연장성은 하한값).")
+            st.caption(f"커튼 끝 연장 권장: {ext:.1f} m 이상 — 투수 기여도 10 % 이상인 절리군 {len(conductive)}개의 연장성(절리군마다 "
+                       "대표값 하나) 중 큰 쪽입니다. 드론으로 본 연장성은 벽면에 드러난 길이(하한값)이므로 여유를 두세요.")
     render_grouting_3d(result, sets, best, in_plane, az)
-    if any(sets["note"].str.contains("벽면과 평행")):
-        st.warning("벽면과 평행한 절리군의 간격은 벽면이 계단식으로 물러나는 간격일 수 있어 투수 기여도를 과대평가할 수 있습니다. "
-                   "현장 판단으로 간격을 고치거나 '포함'을 끄고 비교해 보세요.")
+
+
+def _reset_sets(key):
+    """Callback: the joint-set table back to the values of the analysis."""
+    for k in (key, "_gr_sets_edit", "_gr_sets_base"):
+        st.session_state.pop(k, None)
 
 
 @_fragment
@@ -181,6 +206,13 @@ def _seepage_map(result):
     return st.session_state["_seep_default"], "유출 가능성: 기본 가중치"
 
 
+def _seepage_key():
+    """Identity of the map _seepage_map gives, for caches: the seepage view's settings, or 'default' -- not the
+    object's address, which a later map can get again."""
+    sk = st.session_state.get("_seep_key")
+    return sk if "_seep" in st.session_state and sk and sk[1] == _result_key() else ("default", _result_key())
+
+
 def _joint_controls(result):
     """Options for the joint planes inside the rock and the cut-away."""
     with st.expander("벽면 안쪽 절리면 · 표면 잘라내기", expanded=True):
@@ -228,7 +260,7 @@ def _joint_planes(result, sets, opts):
     if not (opts["show"] or opts["dfn"]):
         return None, None
     smap, _ = _seepage_map(result)
-    key = ("_joints", id(result), id(smap), opts["show"], opts["dfn"], opts["depth_factor"], opts["max_depth"],
+    key = ("_joints", _result_key(), _seepage_key(), opts["show"], opts["dfn"], opts["depth_factor"], opts["max_depth"],
            opts["dfn_depth"], tuple(map(tuple, sets[["name", "spacing_m", "persistence_m"]].values.tolist())))
     cache = st.session_state.setdefault("_joints_cache", {})
     if key not in cache:
@@ -335,23 +367,29 @@ def _seepage_overlay_controls() -> dict:
 def _uniform_controls(c, best, in_plane):
     from groundwater.viz import grouting3d
 
-    choices = {f"최적 ({best['trend']:.0f}°/{best['plunge']:.0f}°)": (best["trend"], best["plunge"]), "연직 (0°/90°)": (0.0, 90.0)}
+    # The options are named by what they are, not by their angles: the best direction moves when the joint-set
+    # table is edited, and a choice named by its angles would then be another option (and fall back to the first).
+    choices = {"best": (best["trend"], best["plunge"]), "vertical": (0.0, 90.0), "manual": None}
     if in_plane:
-        choices = {f"커튼 면 안 최적 ({in_plane['trend']:.0f}°/{in_plane['plunge']:.0f}°)": (in_plane["trend"], in_plane["plunge"]),
-                   **choices}
-    choices["직접 입력"] = None
-    pick = c[0].radio("공 방향", list(choices), key="g3d_dir")
+        choices = {"in_plane": (in_plane["trend"], in_plane["plunge"]), **choices}
+    names = {"in_plane": "커튼 면 안 최적", "best": "최적", "vertical": "연직", "manual": "직접 입력"}
+
+    def label(k):
+        return names[k] + (f" ({choices[k][0]:.0f}°/{choices[k][1]:.0f}°)" if choices[k] else "")
+
+    _w("g3d_dir", next(iter(choices)))
+    if st.session_state["g3d_dir"] not in choices:          # 'in the curtain plane' without a curtain, an old label
+        st.session_state["g3d_dir"] = "best"
+    pick = c[0].radio("공 방향 (방위/경사)", list(choices), format_func=label, key="g3d_dir")
     if choices[pick] is None:
-        st.session_state.setdefault("g3d_trend", float(best["trend"]))
-        st.session_state.setdefault("g3d_plunge", 60.0)
-        trend = c[0].number_input("방위 (°)", 0.0, 360.0, step=5.0, key="g3d_trend")
-        plunge = c[0].number_input("경사 (°, 아래로)", 0.0, 90.0, step=5.0, key="g3d_plunge")
+        trend = c[0].number_input("방위 (°)", 0.0, 360.0, step=5.0, **_w("g3d_trend", float(best["trend"]), site=True))
+        plunge = c[0].number_input("경사 (°, 아래로)", 0.0, 90.0, step=5.0, **_w("g3d_plunge", 60.0, site=True))
     else:
         trend, plunge = choices[pick]
     flat = plunge < grouting3d.MIN_CREST_PLUNGE
     positions = ["상부에서 (커튼선)", "벽면에서"]
-    mode = _choice("천공 위치", positions, c[1], key="g3d_mode", default=positions[1 if flat else 0], disabled=flat,
-                   format_func=lambda p: p.split(" (")[0])
+    mode = _choice("천공 위치", positions, c[1], disabled=flat, format_func=lambda p: p.split(" (")[0],
+                   **_w("g3d_mode", positions[1 if flat else 0]))
     if flat:
         mode = "벽면에서"
         c[1].caption(f"경사 {plunge:.0f}° 공은 상부에서 뚫으면 절벽 위에만 머물러 벽면에서 뚫는 배치로 그립니다 "
@@ -433,12 +471,15 @@ def _grouting_surface_and_draw(result, sets, targeted, trend, plunge, spacing, l
                         st.session_state["_surf"] = planar.textured_surface(dem, ortho, reg["matrix"], step_m=0.08)
                         st.session_state["_surf_key"] = key
                 surface = st.session_state["_surf"]
-    tkey = None if targeted is None else tuple((k, id(v) if k == "smap" else v) for k, v in sorted(targeted.items()))
+    tkey = None if targeted is None else tuple((k, _seepage_key() if k == "smap" else v)
+                                               for k, v in sorted(targeted.items()))
     smap_over = _seepage_map(result)[0] if seep["on"] else None
+    # the sets as edited in the table: the hole layout and the joint planes are made from them
+    skey = tuple(map(tuple, sets[["name", "spacing_m", "persistence_m", "aperture_rel"]].values.tolist()))
     draw_key = (_result_key(), mp if mesh_ok else None, hide_veg, id(surface), opacity, as_points, npts,
-                tuple(sorted(jopts.items())), tkey,
+                tuple(sorted(jopts.items())), tkey, skey,
                 trend, plunge, spacing, length, offset, tuple(rows or ()), mode,
-                tuple(sorted(seep.items())), id(smap_over))
+                tuple(sorted(seep.items())), _seepage_key() if seep["on"] else None)
     clicked = st.button("3차원 장면 그리기", type="primary",
                         help="한 번 그린 뒤에는 옵션을 바꾸면 자동으로 다시 그립니다.")
     if clicked or (st.session_state.get("_g3d") and st.session_state.get("_g3d_key") != draw_key):
@@ -484,6 +525,9 @@ def _grouting_surface_and_draw(result, sets, targeted, trend, plunge, spacing, l
                     f"공이 지납니다 (관측 절리 전체 {meta['joints']}개 중 {meta['joints_hit']}개"
                     + (f", 통계 절리 {meta['dfn']}개 중 {meta['dfn_hit']}개" if meta.get("dfn") else "") + "). "
                     "빨간 테두리가 남은 절리입니다 — 배치 방식·간격·공 길이를 바꿔 비교해 보세요.")
+            st.caption(f"이 비율은 가정에 따른 값입니다: 절리가 암반 속으로 트레이스 길이 ×{jopts['depth_factor']:g}"
+                       f" (최대 {jopts['max_depth']:g} m)만큼, 절리군 평균 방향으로 이어진다고 보았습니다. 실제 연장과 "
+                       "방향은 시추(텔레뷰어)로 확인해야 하며, '연장 깊이'를 바꿔 결과가 얼마나 달라지는지 보세요.")
         if shown and any(v < 1 for v in shown.values()):
             st.caption("통계 절리망이 너무 많아 일부만 만들었습니다 (공과의 교차도 그만큼만 셉니다): "
                        + ", ".join(f"{k} {v:.0%}" for k, v in shown.items() if v < 1))
@@ -508,6 +552,7 @@ def _grouting_surface_and_draw(result, sets, targeted, trend, plunge, spacing, l
                 st.warning(f"{n}개 공이 계획 길이 전에 암반 밖으로 나갑니다 (빨간 ✕, 표의 '암반 이탈'). "
                            "방향·위치·길이를 조정하세요.")
             _table(table)
+            _export(table, "grouting_holes.csv", "g3d_holes_csv")
         _section_view(result, sets)
         _tiles_view(result, sets, mp, pdir)
         out = st.session_state.get("output_dir")

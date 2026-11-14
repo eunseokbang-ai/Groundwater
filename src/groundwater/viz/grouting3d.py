@@ -361,7 +361,7 @@ def network_layout(result, smap, joints, sets, classes=(2,), length: float = 8.0
         t = _cast(site.scene, start, -outs)
         hit = np.isfinite(t) & (t < 6.0)
         collars[hit] = start[hit] - t[hit, None] * outs[hit]
-    share = crossing_weights(sets) if len(sets) else []
+    share = crossing_weights(sets) / len(sets) if len(sets) else []      # sums to 1: the scale `stat_w` was tuned on
     cand_c, cand_d, cand_tp = [], [], []
     for i in range(len(u)):
         tr_in = float(np.degrees(np.arctan2(-outs[i, 0], -outs[i, 1])))

@@ -645,10 +645,11 @@ SEEPAGE_NAMES = {2: "유출 가능성 상 (상위 15%)", 1: "유출 가능성 �
 
 def seepage_rgba(smap, classes=(2, 1), alpha: int = 150) -> np.ndarray:
     """RGBA uint8 image of the seepage classes, one pixel per map cell (top row = highest elevation)."""
+    from .seepage_view import grade_layers
+
     out = np.zeros(smap.classes.shape + (4,), np.uint8)
-    for k in classes:
-        m = smap.classes == k
-        out[m, :3] = _rgb(SEEPAGE_COLOURS[k]).astype(np.uint8)
+    for _, m, colour in grade_layers(smap, classes):               # under the net: its own ranking, its own colours
+        out[m, :3] = _rgb(colour).astype(np.uint8)
         out[m, 3] = alpha
     return out
 
@@ -657,12 +658,14 @@ def seepage_tiles_overlay(result, smap, classes=(2, 1), step_m: float = 0.1, off
     """The seepage map draped on the face, as an overlay entry for tiles3d.scene_json (cells kept sharp)."""
     if smap is None:
         return None
+    from .seepage_view import grade_layers
+
     k = max(1, int(round(smap.cell_m / 0.05)))        # upscaled, nearest: the cell edges stay sharp on the model
     rgba = np.repeat(np.repeat(seepage_rgba(smap, classes, alpha=170), k, axis=0), k, axis=1)
     d = smap.cell_m / k
     return _image_overlay(result, rgba, smap.u_min, smap.v_max, d, d,
                           "유출 가능성 지도 (" + "·".join("상" if k == 2 else "중" for k in classes) + ")", "seepage",
-                          step_m, offset_m, colors=[SEEPAGE_COLOURS[k] for k in classes])
+                          step_m, offset_m, colors=[c for _, m, c in grade_layers(smap, classes) if m.any()])
 
 
 def cell_drape_traces(result, u_min: float, v_max: float, cell_m: float, layers: list, origin,
@@ -707,10 +710,13 @@ def seepage_traces(result, smap, origin, classes=(2, 1), opacity: float = 0.55, 
     the numbers of the `zones` best zones ("#n" as in the seepage map figure), world coordinates minus `origin`."""
     if smap is None:
         return []
-    layers = [(SEEPAGE_NAMES[k], smap.classes == k, SEEPAGE_COLOURS[k]) for k in classes]
+    from ..hydro import top_zones
+    from .seepage_view import grade_layers
+
+    layers = [(f"유출 가능성 {name}", m, colour) for name, m, colour in grade_layers(smap, classes) if m.any()]
     out = cell_drape_traces(result, smap.u_min, smap.v_max, smap.cell_m, layers, origin, opacity, step_m, offset_m)
     if zones and smap.zones is not None and len(smap.zones):
-        z = smap.zones.head(zones)
+        z = top_zones(smap.zones, zones)
         Z = z[["x", "y", "z"]].to_numpy(float) - origin
         out.append(dict(type="scatter3d", x=Z[:, 0], y=Z[:, 1], z=Z[:, 2] + 0.8, mode="text",
                         text=[f"#{n}" for n in z["zone"]], name=f"유출 '상' 구역 번호 (상위 {len(z)})",

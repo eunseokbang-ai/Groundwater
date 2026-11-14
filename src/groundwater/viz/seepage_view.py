@@ -16,6 +16,21 @@ LAYERS = {
     "wetness": ("절리 옆 식생 비율", "%", "Greens", lambda a: a * 100.0),
 }
 GRADE_COLOURS = {2: "#dc2626", 1: "#f59e0b"}
+# the cells under rockfall netting are a ranking of their own (hydro.seepage_potential): never the same colours
+NET_COLOURS = {2: "#7e22ce", 1: "#a78bfa"}
+GRADE_NAMES = {2: "상 (상위 15%)", 1: "중 (다음 35%)"}
+NET_NAMES = {2: "망 아래 상 (라이다 홈 깊이 상위 15%)", 1: "망 아래 중 (다음 35%)"}
+LOW_COLOUR = "#64748b"                 # '하' cells, drawn only on request (map_figure)
+TRACE_LAYERS = ("p21", "connectivity", "wetness")      # from the photo traces: not measured under the net
+
+
+def grade_layers(smap, classes=(2, 1)) -> list:
+    """[(name, cell mask, colour)] of the grades to draw, the bare-rock ranking and the one under the net apart."""
+    net = getattr(smap, "net", None)
+    if net is None:
+        return [(GRADE_NAMES[k], smap.classes == k, GRADE_COLOURS[k]) for k in classes]
+    return ([(GRADE_NAMES[k], (smap.classes == k) & ~net, GRADE_COLOURS[k]) for k in classes]
+            + [(NET_NAMES[k], (smap.classes == k) & net, NET_COLOURS[k]) for k in classes])
 
 
 def layer_values(smap, name: str) -> np.ndarray:
@@ -23,7 +38,10 @@ def layer_values(smap, name: str) -> np.ndarray:
     if name == "grade":
         return np.where(smap.classes >= 0, smap.classes, np.nan).astype(float)
     a = LAYERS[name][3](np.asarray(smap.layers[name], float))
-    return np.where(smap.rock, a, np.nan)
+    shown = smap.rock
+    if name in TRACE_LAYERS and getattr(smap, "net", None) is not None:
+        shown = shown & ~smap.net
+    return np.where(shown, a, np.nan)
 
 
 def _alpha(t):
@@ -60,10 +78,12 @@ def _jpeg_uri(rgb_top_first: np.ndarray) -> str:
     return "data:image/jpeg;base64," + base64.b64encode(jpg.tobytes()).decode()
 
 
-def map_figure(smap, layer: str, background, ext, opacity: float = 0.6, zones: int = 10, title: str = ""):
+def map_figure(smap, layer: str, background, ext, opacity: float = 0.6, zones: int = 10, title: str = "",
+               show_low: bool = False):
     """Plotly figure: `background` (RGB, top row first) over chainage `ext` = [u0, u1, v0, v1], the layer over it
-    (grade: '상' / '중' cells; otherwise the values with a colour bar), the `zones` best '상' zones boxed and
-    numbered, and every rock cell's values on hover."""
+    (grade: '상' / '중' cells, with `show_low` the '하' cells too so that a cell without colour is one that was not
+    scored; otherwise the values with a colour bar), the `zones` best '상' zones boxed and numbered, and every rock
+    cell's values on hover."""
     import plotly.graph_objects as go
 
     H, W = background.shape[:2]
@@ -74,12 +94,16 @@ def map_figure(smap, layer: str, background, ext, opacity: float = 0.6, zones: i
     c = smap.cell_m
     x0, y0 = smap.u_min + c / 2, smap.v_max - rows * c + c / 2
     if layer == "grade":
-        for k, name in ((1, "중 (다음 35%)"), (2, "상 (상위 15%)")):
-            z = np.where(smap.classes == k, 1.0, np.nan)[::-1]
-            fig.add_trace(go.Heatmap(z=z, x0=x0, dx=c, y0=y0, dy=c, colorscale=[[0, GRADE_COLOURS[k]], [1, GRADE_COLOURS[k]]],
-                                     showscale=False, opacity=opacity, hoverinfo="skip", name=name))
+        grades = [("하 (나머지 50%)", smap.classes == 0, LOW_COLOUR)] * bool(show_low) + grade_layers(smap, (1, 2))
+        for name, cells, colour in grades:
+            if not cells.any():
+                continue
+            z = np.where(cells, 1.0, np.nan)[::-1]
+            fig.add_trace(go.Heatmap(z=z, x0=x0, dx=c, y0=y0, dy=c, colorscale=[[0, colour], [1, colour]],
+                                     showscale=False, opacity=opacity * (0.55 if colour == LOW_COLOUR else 1.0),
+                                     hoverinfo="skip", name=name))
             fig.add_trace(go.Scatter(x=[None], y=[None], mode="markers", name=name,
-                                     marker=dict(symbol="square", size=13, color=GRADE_COLOURS[k])))
+                                     marker=dict(symbol="square", size=13, color=colour)))
     else:
         label, unit, cmap, _ = LAYERS[layer]
         vals = layer_values(smap, layer)
@@ -88,20 +112,30 @@ def map_figure(smap, layer: str, background, ext, opacity: float = 0.6, zones: i
                                  opacity=opacity, hoverinfo="skip", showscale=True, name=label,
                                  colorbar=dict(title=dict(text=f"{label}" + (f" ({unit})" if unit else "")), thickness=14)))
     # the best zones: boxes and numbers
-    for z in smap.zones.head(zones).itertuples():
+    from ..hydro import BASIS_NET, top_zones
+
+    for z in top_zones(smap.zones, zones).itertuples():
         a, b = (float(v) for v in z.chainage_m.split("–"))
         e, f = (float(v) for v in z.elevation_m.split("–"))
-        fig.add_trace(go.Scatter(x=[a, b, b, a, a], y=[e, e, f, f, e], mode="lines", line=dict(color="white", width=2),
+        under = getattr(z, "basis", None) == BASIS_NET              # the other ranking: its own box and tag colour
+        fig.add_trace(go.Scatter(x=[a, b, b, a, a], y=[e, e, f, f, e], mode="lines",
+                                 line=dict(color="#e9d5ff" if under else "white", width=2, dash="dot" if under else None),
                                  hoverinfo="skip", showlegend=False))
         fig.add_annotation(x=a, y=f, text=f"<b>#{z.zone}</b>", showarrow=False, xanchor="left", yanchor="bottom",
-                           bgcolor="#7f1d1d", font=dict(color="white", size=11), borderpad=2)
+                           bgcolor="#581c87" if under else "#7f1d1d", font=dict(color="white", size=11), borderpad=2)
     # hover: every rock cell's values
     rr, cc = np.nonzero(smap.rock)
     if len(rr):
         txt = []
         vals = {k: layer_values(smap, k) for k in LAYERS if k != "grade"}
         grade = {2: "상", 1: "중", 0: "하"}
+        net = getattr(smap, "net", None)
         for r, c_ in zip(rr, cc):
+            if net is not None and net[r, c_]:
+                txt.append(f"망 아래 — 등급 {grade.get(int(smap.classes[r, c_]), '-')} (망 아래 칸끼리의 순위)<br>"
+                           f"암반 홈 깊이 {vals['openness'][r, c_]:.1f} cm (라이다, 망 뒤의 암반)<br>"
+                           "트레이스 지표는 망에 가려 없음")
+                continue
             txt.append(f"등급 {grade.get(int(smap.classes[r, c_]), '-')} · 점수 {vals['score'][r, c_]:.2f}<br>"
                        f"절리 밀도 {vals['p21'][r, c_]:.2f} m/m² · 열린 정도 {vals['openness'][r, c_]:.1f} cm<br>"
                        f"연결성 {vals['connectivity'][r, c_]:.0f} m · 절리 옆 식생 {vals['wetness'][r, c_]:.0f}%")
@@ -120,8 +154,7 @@ def _rgba(smap, layer: str, alpha: int = 175) -> np.ndarray:
     rows, cols = smap.classes.shape
     out = np.zeros((rows, cols, 4), np.uint8)
     if layer == "grade":
-        for k, col in GRADE_COLOURS.items():
-            m = smap.classes == k
+        for _, m, col in grade_layers(smap):
             h = col.lstrip("#")
             out[m, :3] = [int(h[i:i + 2], 16) for i in (0, 2, 4)]
             out[m, 3] = alpha
@@ -149,7 +182,9 @@ def tiles_overlays(result, smap, first: str = "grade") -> list:
         label, unit, cmap, _ = LAYERS[name]
         rgba = np.repeat(np.repeat(_rgba(smap, name), k, axis=0), k, axis=1)
         if name == "grade":
-            colors = [GRADE_COLOURS[2], GRADE_COLOURS[1]]
+            colors = [col for _, m, col in grade_layers(smap) if m.any()]
+            if getattr(smap, "net", None) is not None:
+                label += " — 붉은색·주황 = 맨 암반, 보라 = 망 아래 (따로 매긴 순위)"
         else:
             cm = matplotlib.colormaps[cmap]
             colors = ["#%02x%02x%02x" % tuple(int(255 * x) for x in cm(t)[:3]) for t in (0.2, 0.55, 0.95)]

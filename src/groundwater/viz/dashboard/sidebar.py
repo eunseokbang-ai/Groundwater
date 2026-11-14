@@ -43,15 +43,17 @@ def _pick(label, files, folder, help_text=None, default_first=True, key=None):
     return None if choice == NONE else Path(folder) / choice
 
 
-def wall_line_tool(folder: Path, found: dict):
-    """Button that opens the click-to-digitize page for wall_line.csv on the drone orthomosaic."""
+def wall_line_tool(folder: Path, found: dict, save_dir: Path | None = None):
+    """Button that opens the click-to-digitize page for wall_line.csv on the drone orthomosaic. The line is saved
+    where the analysis reads it: the section's folder when a section is chosen, else the site folder."""
+    save_dir = save_dir or folder
     with st.expander("벽면 기준선 그리기 (정사영상에서 클릭)", expanded=found["wall_line"] is None):
-        st.caption("드론 정사영상 위에서 암사면 하단을 따라 클릭해 wall_line.csv를 만듭니다. "
-                   "저장 위치는 위의 현장 자료 폴더입니다.")
+        st.caption("드론 정사영상 위에서 암사면 하단을 따라 클릭해 wall_line.csv를 만듭니다. 저장 위치는 "
+                   + ("위의 현장 자료 폴더입니다." if save_dir == folder else f"이 구간의 폴더입니다 ({save_dir})."))
         ortho = st.text_input("정사영상 (GeoTIFF 파일 또는 들어 있는 폴더)", value=str(folder),
                               help="폴더를 넣으면 그 안에서 가장 큰 컬러 GeoTIFF를 찾습니다 (DTM·DSM 제외).")
         if st.button("정사영상 열기", width="stretch"):
-            url = _open_digitizer(_clean_path(ortho), folder)
+            url = _open_digitizer(_clean_path(ortho), save_dir)
             st.markdown(f"새 탭이 열리지 않으면 [여기]({url})를 누르세요. 저장한 뒤 이 화면을 새로 고치면 반영됩니다.")
 
 
@@ -64,9 +66,12 @@ def _section_picker(folder: Path):
     whole = "(현장 폴더 자체)"
     opts = secs + [whole]
     key = "site_section"
-    if st.session_state.get(key) not in opts:
+    cur = st.session_state.get(key)
+    if cur not in opts:
         last = (_settings_file().get("last_section") or {}).get(_folder_id(folder))
-        st.session_state[key] = last if last in opts else opts[0]
+        cur = last if last in opts else opts[0]
+    st.session_state[key] = cur                # assigned in every run (see _w): after a run that did not draw the
+    #                                            sidebar the box would show the first section and close the result
     pick = st.selectbox("구간", opts, key=key,
                         help="U자 벽처럼 나눈 구간마다 기준선·구간 다각형·분석 결과가 따로 있습니다 (현장 폴더/구간/<이름>/). "
                              "점군·라이다·열화상 등 자료는 현장 폴더의 것을 함께 씁니다.")
@@ -77,14 +82,21 @@ def _section_picker(folder: Path):
 def sidebar_folder():
     """Site-folder input: choose a folder, check the detected files, run. Returns a config or None."""
     _restore_session()
-    st.session_state.setdefault("site_folder", DEMO_FOLDER)
+    # The field is not drawn while the input mode is 'settings file' (nor in a run that failed before the sidebar),
+    # and Streamlit then drops its state: the folder is kept beside it, or coming back would open the demo folder
+    # and close the result on screen. Assigned in every run, as _w does: a value only left in Session State from
+    # an earlier run is not what the widget shows.
+    st.session_state["site_folder"] = st.session_state.get(
+        "site_folder", st.session_state.get("_site_folder_kept", DEMO_FOLDER))
     st.text_input("현장 자료 폴더", key="site_folder", help="마지막으로 쓴 폴더와 설정을 다음 실행 때 그대로 불러옵니다.")
+    st.session_state["_site_folder_kept"] = st.session_state["site_folder"]
     st.button("폴더 선택…", on_click=_browse_folder, width="stretch")
     if st.session_state.pop("browse_error", None):
         st.warning("폴더 선택 창을 열 수 없습니다. 경로를 직접 붙여 넣으세요.")
     folder = _site_dir()
-    if not folder.is_dir():
+    if not _clean_path(st.session_state["site_folder"]) or not folder.is_dir():     # (an empty path is no folder)
         st.error("폴더를 찾을 수 없습니다.")
+        st.session_state.pop("prev_result_dir", None)        # the saved result of the folder shown before is not this one's
         return None
     section = _section_picker(folder)
     _apply_folder_settings(folder, section)
@@ -100,7 +112,7 @@ def sidebar_folder():
             break
     else:
         st.session_state.pop("prev_result_dir", None)
-    wall_line_tool(folder, found)
+    wall_line_tool(folder, found, sdir)
     if not found["point_cloud"] and not found["mesh"] and not found["lidar"]:
         st.error("점군(.las .laz .ply .pcd) 또는 메쉬(.obj) 파일이 없습니다.")
         return None
@@ -135,7 +147,11 @@ def sidebar_folder():
     else:
         st.caption("벽면 기준선 파일(wall_line.csv)이 없어 벽면을 직선 하나로 맞춥니다. "
                    "굽은 벽은 위의 '벽면 기준선 그리기'로 만드는 것이 좋습니다.")
+    from groundwater.facade.region import REGION_FILE
+    if (sdir / REGION_FILE).exists():
+        st.caption(f"분석 범위 다각형: {REGION_FILE} 있음 (쓸지는 고급 설정에서)")
     with st.expander("고급 설정", icon=":material/tune:"):
+        st.caption("여기서 바꾼 값은 다음 **분석 실행**부터 적용됩니다. 화면에 열린 결과는 바뀌지 않습니다.")
         auto = st.checkbox("분석 크기 자동 설정 (점 간격 기준)", **_w("adv_auto", True),
                            help="복셀 크기·법선 반경·패치 연결 거리·입면 영상 해상도를 점군 밀도에서 정합니다. "
                                 "끄면 configs/example_site.yaml 값을 씁니다.")
@@ -175,9 +191,9 @@ def sidebar_folder():
                                        "절리군이 있으면 같은 군으로 봅니다. 스테레오넷 화면의 '후보 절리군'에서 바로 넣을 수도 "
                                        "있습니다. 다음 분석부터 적용됩니다.")
         fixed_sets = _parse_sets(fixed_txt)
+        problems = []                          # a value that cannot be read stops the run: it must not mean 'no limit'
         if fixed_sets is None:
-            st.error("절리군은 '경사/경사방향' 형식으로, 쉼표로 구분해 넣으세요 (예: 48/047, 30/120).")
-            fixed_sets = []
+            problems.append("직접 지정할 절리군은 '경사/경사방향' 형식으로, 쉼표로 구분해 넣으세요 (예: 48/047, 30/120).")
         excl_wall = st.checkbox("절벽면(굴착면)과 평행한 면은 절리군 찾기에서 빼기", **_w("adv_excl_wall", False),
                                 help="석산 벽은 발파·기계로 깎은 면이라, 벽과 나란한 면(벤치면·발파면 또는 그 면을 따라 깨진 절리)이 "
                                      "넓게 드러나 절리군 판정을 좌우합니다. 켜면 경사 20° 초과이고 그 자리 벽면 방향과 20° 이내인 "
@@ -190,17 +206,23 @@ def sidebar_folder():
         c1, c2 = st.columns(2)
         u_lo, u_hi = c1.text_input("측점 최소 (m)", **_w("adv_u_lo", "", site=True)), c2.text_input("측점 최대 (m)", **_w("adv_u_hi", "", site=True))
         v_lo, v_hi = c1.text_input("표고 최소 (m)", **_w("adv_v_lo", "", site=True)), c2.text_input("표고 최대 (m)", **_w("adv_v_hi", "", site=True))
-        from groundwater.facade.region import REGION_FILE
-        has_poly = (folder / REGION_FILE).exists()
-        if not has_poly:
-            st.session_state["adv_use_poly"] = False
-        use_poly = st.checkbox("입면 도구에서 그린 분석 범위 다각형 사용", disabled=not has_poly, **_w("adv_use_poly", has_poly, site=True))
+        has_poly = (sdir / REGION_FILE).exists()           # the section's own files, as build_config reads them
+        # Remembered only while there is a polygon: with none the box is off but that is not a choice to keep --
+        # the polygon drawn next must be used by the run that follows (a remembered 'off' ignored it).
+        if has_poly:
+            use_poly = st.checkbox("입면 도구에서 그린 분석 범위 다각형 사용", **_w("adv_use_region", True, site=True))
+        else:
+            use_poly = st.checkbox("입면 도구에서 그린 분석 범위 다각형 사용", value=False, disabled=True,
+                                   help="아직 그린 범위가 없습니다. 결과를 연 뒤 '입면 도구 열기'에서 그려 저장하면 "
+                                        "다음 분석부터 그 범위만 분석합니다.")
         from groundwater.facade.region import BUFFER_FILE, SECTION_FILE
-        has_buf = (folder / BUFFER_FILE).exists() and (folder / SECTION_FILE).exists()
+        has_buf = (sdir / BUFFER_FILE).exists() and (sdir / SECTION_FILE).exists()
         overlap = st.checkbox("구간 경계 겹침 처리 (버퍼)", disabled=not has_buf, **_w("adv_overlap", True),
                               help="U자 벽처럼 구간을 나눈 경우, 구간 경계 밖 약 20 m(section_buffer.csv)까지 함께 분석해서 "
                                    "경계에 걸친 절리면을 통째로 잡고, 결과는 중심이 이 구간(section_area.csv) 안에 있는 것만 "
-                                   "남깁니다. 겹침 구간은 지도에 회색으로 표시됩니다.")
+                                   "남깁니다. 겹침 구간은 지도에 회색으로 표시됩니다."
+                                   + ("" if has_buf else " (이 폴더에 section_buffer.csv와 section_area.csv가 없어 쓸 수 없습니다.)"))
+        overlap = overlap and has_buf
         st.markdown("**절벽면 평행 DEM·정사영상** (선택)")
         planar_run = _planar_input("폴더 (Metashape 평면 투영 등)", "adv_planar",
                                    help="있으면 입면 영상 색과 트레이스 검출에 이 고해상도 자료를 씁니다. "
@@ -210,8 +232,13 @@ def sidebar_folder():
         region = {k: [num(a), num(b)] for k, (a, b) in {"chainage": (u_lo, u_hi), "elevation": (v_lo, v_hi)}.items()
                   if a.strip() or b.strip()}
     except ValueError:
-        st.error("분석 범위에는 숫자만 넣으세요.")
+        problems.append("분석 범위(측점·표고)에는 숫자만 넣으세요.")
         region = {}
+    if any(lo is not None and hi is not None and lo >= hi for lo, hi in region.values()):
+        problems.append("분석 범위의 최소는 최대보다 작아야 합니다.")
+    if problems:
+        st.error("고급 설정을 고쳐야 분석할 수 있습니다:\n\n" + "\n".join(f"- {p}" for p in problems))
+        return None
     st.caption(f"결과 저장: {sdir / site_folder.OUTPUT_DIRNAME}")
     lidar = cloud if cloud_is_lidar else (found["lidar"][0] if found["lidar"] else None)
     if not cloud_is_lidar and sec_poly and found["lidar"]:      # the LiDAR that covers this section

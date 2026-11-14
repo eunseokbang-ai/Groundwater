@@ -28,6 +28,33 @@ def test_best_hole_crosses_the_dominant_set_at_right_angle():
     assert best["joints_per_m"] > 5 * vertical["joints_per_m"]      # a vertical hole misses set A
 
 
+def test_hole_frequency_is_a_count_when_apertures_are_equal():
+    """Three sets, one aperture: a hole along the pole of each set crosses 1 / spacing of it per metre -- the
+    weights must not divide the count by the number of sets."""
+    sets = _sets([("A", 90, 90, 0.5, 2.0), ("B", 90, 0, 1.0, 2.0), ("C", 0, 0, 2.0, 2.0)])
+    w = hydro.crossing_weights(sets)
+    assert np.allclose(w, 1.0)
+    assert np.isclose(hydro.hole_frequency(sets, w, 90, 0), 2.0)        # E-W horizontal: set A only, every 0.5 m
+    assert np.isclose(hydro.hole_frequency(sets, w, 0, 90), 0.5)        # vertical: the flat set C, every 2 m
+    per_set = {r["set"]: r["joints_per_10m"] for r in hydro.per_set_frequency(sets, 90, 0)}
+    assert np.isclose(sum(per_set.values()), 10 * hydro.hole_frequency(sets, w, 90, 0))   # as the table beside it
+    sets.loc[0, "aperture_rel"] = 2.0                                    # an open set counts for more, mean stays 1
+    w = hydro.crossing_weights(sets)
+    assert np.isclose(w.mean(), 1.0) and w[0] == 8 * w[1]
+
+
+def test_filled_in_values_are_marked():
+    class Set:
+        set_id, mean_dip, mean_dip_direction, spacing_mean, patches = 1, 80.0, 120.0, None, []
+
+    class Result:
+        discontinuity_sets, trace_families = [Set()], []
+
+    df = hydro.joint_sets_for_flow(Result())
+    assert df.loc[0, "spacing_m"] == 2.0 and df.loc[0, "persistence_m"] == 1.0
+    assert "간격 채움" in df.loc[0, "note"] and "연장성 채움" in df.loc[0, "note"]
+
+
 def test_curtain_parallel_set_is_flagged_and_never_cut():
     sets = _sets([("P", 88, 140, 1.0, 2.0), ("X", 85, 50, 1.0, 2.0), ("Bed", 5, 0, 3.0, 2.0)])
     cc = hydro.curtain_check(sets, curtain_azimuth=50.0).set_index("set")   # curtain strikes 050

@@ -10,6 +10,7 @@ CLI usage:
 import copy
 import argparse
 import json
+import os
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -799,12 +800,20 @@ def save_results(result: PipelineResult, output_dir: str | Path) -> None:
     colors = _colors_by_set(result.point_labels[:, 0])
     colored_pcd = o3d.geometry.PointCloud(result.point_cloud)
     colored_pcd.colors = o3d.utility.Vector3dVector(np.ascontiguousarray(colors))
-    o3d.io.write_point_cloud(str(output_dir / "classified_point_cloud.ply"), colored_pcd)
+    if not o3d.io.write_point_cloud(str(output_dir / "classified_point_cloud.ply"), colored_pcd):
+        raise OSError(f"could not write {output_dir / 'classified_point_cloud.ply'}")
 
     np.save(output_dir / "point_labels.npy", result.point_labels)
-    # everything but the Open3D cloud (stored above as classified_point_cloud.ply), for load_results
-    with open(output_dir / RESULT_PICKLE, "wb") as f:
-        pickle.dump(dataclasses.replace(result, point_cloud=None), f, protocol=pickle.HIGHEST_PROTOCOL)
+    # everything but the Open3D cloud (stored above as classified_point_cloud.ply), for load_results. Written
+    # beside the file and swapped in: a save that fails half way leaves the last complete result.pkl in place
+    # (it is the file that says 'there is a saved result here').
+    tmp = output_dir / (RESULT_PICKLE + ".tmp")
+    try:
+        with open(tmp, "wb") as f:
+            pickle.dump(dataclasses.replace(result, point_cloud=None), f, protocol=pickle.HIGHEST_PROTOCOL)
+        os.replace(tmp, output_dir / RESULT_PICKLE)
+    finally:
+        tmp.unlink(missing_ok=True)
 
 
 FACADE_PREVIEW = "facade_preview.jpg"
@@ -863,6 +872,8 @@ def save_hydro_tables(result: PipelineResult, output_dir: Path, smap=None, g=Non
         cells = pd.DataFrame({"chainage_m": smap.u_min + (cc + 0.5) * smap.cell_m,
                               "elevation_m": smap.v_max - (rr + 0.5) * smap.cell_m,
                               "class": smap.classes[rr, cc],
+                              # 1: under rockfall netting, ranked among the netted cells by the rock's groove depth
+                              "under_net": (smap.net[rr, cc] if smap.net is not None else np.zeros(len(rr), bool)).astype(int),
                               **{k: smap.layers[k][rr, cc] for k in ("score", "p21", "openness", "connectivity", "wetness")}})
         cells.round(4).to_csv(output_dir / "seepage_cells.csv", index=False)
     if g:

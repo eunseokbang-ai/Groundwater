@@ -42,6 +42,17 @@ def _program_modules(prefix: str = "groundwater") -> list:
     return [n for n in list(sys.modules) if n == prefix or n.startswith(prefix + ".")]
 
 
+def _analysis_running() -> bool:
+    """Whether an analysis is running in this server (dashboard/run.py, looked up without importing it). While it
+    is, the modules are left as loaded: a result made by the old classes cannot be pickled once the modules were
+    loaded afresh ('not the same object'), and the run of up to an hour would be lost at its last step."""
+    run = sys.modules.get(_DASHBOARD + ".run")
+    try:
+        return bool(run) and any(j.get("state") == "running" for j in run._jobs().values())
+    except Exception:  # noqa: BLE001 -- a check, never a reason to stop the page
+        return False
+
+
 def _refresh_program_modules():
     """Drop the program modules (groundwater.*) from memory when any of their files changed since they were
     loaded, so this run imports them afresh. Streamlit's own watcher misses a change made while no browser
@@ -53,6 +64,8 @@ def _refresh_program_modules():
     of the result held in the session) stays as loaded. Streamlit's watcher drops just the one edited module, which
     would leave the other dashboard modules with the old functions they imported from it -- so a dashboard module
     gone from memory counts as changed too."""
+    if _analysis_running():                    # its result must be saved by the classes it was made with
+        return
     state = _module_times()
     everything = state["new"]                  # first run of this check in a server that may have run for hours
     state["new"] = False

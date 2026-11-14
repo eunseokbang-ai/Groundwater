@@ -1,7 +1,7 @@
 """View '현장 전체 3D': the tiled model of the whole site with every section's result."""
 import streamlit as st
 
-from groundwater.viz.dashboard.components import _note, _open_tiles_viewer, _variant_picker
+from groundwater.viz.dashboard.components import _kept_choices, _note, _open_tiles_viewer, _variant_picker
 from groundwater.viz.dashboard.state import _saved, _site_dir, _w
 
 
@@ -34,6 +34,7 @@ def render_site_tiles(result=None):
         names = [n for n, _ in secs]
         default = [n for n in names if n != "현장 폴더"] or names
         c = st.columns([3, 1, 1, 1.3], vertical_alignment="bottom")
+        _kept_choices("site3d_secs", names)
         pick = c[0].multiselect("구간 결과", names, default=default, key="site3d_secs",
                                 help="'현장 폴더'는 현장 폴더 자체의 분석결과(서측 사진측량)입니다. 서측 라이다 결과와 같은 벽이라 "
                                      "둘 다 고르면 겹칩니다.")

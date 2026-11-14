@@ -76,7 +76,7 @@ def _get(obj, name, default=None):
 
 
 def scene_from_plotly(fig, key: str = "view") -> dict:
-    """The Scatter3d (markers / lines) and Mesh3d traces of a Plotly figure as a scene for view3d.html."""
+    """The Scatter3d (markers / lines), Mesh3d and Surface traces of a Plotly figure as a scene for view3d.html."""
     raw = []
     for tr in fig.data:
         t = tr.type
@@ -136,6 +136,24 @@ def scene_from_plotly(fig, key: str = "view") -> dict:
                 single = _hex(tuple(np.median(cc, axis=0).astype(int))) if cc is not None else "#9ca3af"
             item["color"] = single
             raw.append(item)
+        elif t == "surface":                   # a z grid (the ground): two triangles per cell with all four corners
+            z = np.asarray(tr.z, float)
+            if z.ndim != 2 or min(z.shape) < 2:
+                continue
+            x, y = np.asarray(tr.x, float), np.asarray(tr.y, float)
+            X, Y = (x, y) if x.ndim == 2 else np.meshgrid(x, y)
+            idx = np.arange(z.size).reshape(z.shape)
+            a, b, c, d = idx[:-1, :-1].ravel(), idx[:-1, 1:].ravel(), idx[1:, :-1].ravel(), idx[1:, 1:].ravel()
+            F = np.vstack([np.column_stack([a, b, c]), np.column_stack([b, d, c])])
+            F = F[np.isfinite(z.ravel()[F]).all(axis=1)]
+            if not len(F):
+                continue
+            used, F = np.unique(F, return_inverse=True)            # only the corners in use (no NaN in the buffers)
+            P = np.column_stack([X.ravel(), Y.ravel(), z.ravel()])[used]
+            scale = list(tr.colorscale or [])
+            colour = _hex(_rgb1(scale[len(scale) // 2][1])) if scale else "#bdb7b2"
+            raw.append({**common, "kind": "mesh", "P": P, "F": F.reshape(-1, 3).astype(np.uint32), "flat": False,
+                        "color": colour})
     if raw:
         allp = np.vstack([r["P"] for r in raw if len(r["P"])])
         lo, hi = np.nanmin(allp, axis=0), np.nanmax(allp, axis=0)

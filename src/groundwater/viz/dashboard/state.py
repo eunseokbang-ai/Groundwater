@@ -82,11 +82,21 @@ NONE = "(사용 안 함)"
 SETTINGS_FILE = Path.home() / ".groundwater" / "dashboard_settings.json"
 _PLANAR_WIDGETS = ("adv_planar", "planar_dir_input", "planar_redetect_dir")
 _LINKED_WIDGETS = {"planar_dir": list(_PLANAR_WIDGETS), "mesh_path": ["mesh_path_input"]}
-_RESULT_STATE = ("result", "result_key", "output_dir", "loaded_from", "_figs", "_seep", "_seep_key", "_seep_default",
+_RESULT_STATE = ("result", "result_key", "output_dir", "loaded_from", "_figs", "_seep", "_seep_key", "_seep_default", "_seep_default_key", "_gr_sets_edit", "_gr_sets_base",
                  "_g3d", "_g3d_key", "_g3d_raw", "_joints_cache", "_ref_cache", "_sec_cache", "_3d_sample", "_3d_fig",
                  "_facade_disp", "_sm_disp", "_sm_sample", "_sm_cloudfig", "_sm_joints", "_sm_isample", "_sm_surface", "_sm_dense", "_sm_major",
                  "_sm_ifig", "_flow_sets", "_fam_sets",
-                 "_kin_stereo", "_kin_map", "_kin_3dfig", "_kin_domains", "_th_imgs", "_th_folders", "_pop_thermal", "_ta", "_ta_smap", "_seep_ortho", "_seep_facade")
+                 "_kin_stereo", "_kin_map", "_kin_3dfig", "_kin_domains", "_th_imgs", "_th_folders", "_pop_thermal", "_ta", "_ta_smap", "_seep_ortho", "_seep_facade", "_seep_net")
+
+
+def _sections_stamp(site, variant: str = "") -> tuple:
+    """Identity of a site's saved section results, for the caches of the site-wide views: the folder, the result
+    variant and the file time of every section's faces. Another site, or a section analysed again, is another
+    key (the section names alone are the same on both sides)."""
+    from groundwater.viz import site3d
+
+    return (str(site), variant) + tuple((n, (Path(d) / "discontinuity_patches.csv").stat().st_mtime)
+                                        for n, d in site3d.section_results(site, variant))
 
 
 def _clean_path(text) -> str:
@@ -120,6 +130,12 @@ def _saved(key, default):
     return st.session_state.get("_saved_values", {}).get(key, default)
 
 
+def _option(key, default=None):
+    """The current value of a remembered option that another view draws: its state when that view has been
+    open in this session, else the saved value."""
+    return st.session_state.get(key, _saved(key, default))
+
+
 def _remember(key, site: bool = False):
     """Mark the option `key` (a Session State key) as remembered between sessions: for every site (general), or
     with site=True for this site folder only. The session keeps the list, so it holds exactly the options this
@@ -141,7 +157,11 @@ def _w(key, default, site: bool = False):
 def _w_clamped(key, default, lo, hi, site: bool = False):
     """_w for a slider whose limits come from the data: the remembered value is brought inside them."""
     _remember(key, site)
-    st.session_state[key] = float(min(max(st.session_state.get(key, _saved(key, default)), lo), hi))
+    try:
+        v = float(st.session_state.get(key, _saved(key, default)))
+    except (TypeError, ValueError):            # a saved value of another kind (an older version's)
+        v = float(default)
+    st.session_state[key] = float(min(max(v, lo), hi))
     return {"key": key}
 
 
@@ -177,9 +197,11 @@ def _apply_folder_settings(folder, section=None):
         st.session_state.pop(k, None)
     for linked in sum(_LINKED_WIDGETS.values(), []):
         st.session_state.pop(linked, None)
+    # The values are NOT copied into Session State under the widgets' keys. Streamlit keeps such an entry apart from
+    # the widget's own state, and gives it back once the widget is no longer drawn: an option changed in a view
+    # read as its session-start value again after the view was left, and was saved so. A widget takes its saved
+    # value when it is drawn (_w); code that reads another view's option uses _option.
     st.session_state["_saved_values"] = values
-    for k, v in values.items():                # views also read each other's options straight from Session State
-        st.session_state[k] = v
 
 
 def _store_settings():
@@ -203,9 +225,16 @@ def _store_settings():
            "general": {**(data.get("general") or {}), **general},
            "folders": {**folders, fid: {**(folders.get(fid) or {}), **site}}}
     if new != data:
+        import os
+
         try:
             SETTINGS_FILE.parent.mkdir(parents=True, exist_ok=True)
-            SETTINGS_FILE.write_text(json.dumps(new, ensure_ascii=False, indent=1), encoding="utf-8")
+            if not data and SETTINGS_FILE.exists() and SETTINGS_FILE.stat().st_size > 2:
+                # the file is there but could not be read: every site's options are in it -- keep a copy
+                os.replace(SETTINGS_FILE, SETTINGS_FILE.with_suffix(".bad.json"))
+            tmp = SETTINGS_FILE.with_suffix(".tmp")        # written whole, then swapped in: never a half file
+            tmp.write_text(json.dumps(new, ensure_ascii=False, indent=1), encoding="utf-8")
+            os.replace(tmp, SETTINGS_FILE)
         except OSError:
             pass
 
@@ -214,7 +243,7 @@ def _reference_folder(result):
     """Planar folder that holds reference_overlays.json (site-specific reference images), if any."""
     from groundwater.facade import reference_overlays as ro
 
-    for d in ((result.config.get("planar") or {}).get("folder"), st.session_state.get("planar_dir")):
+    for d in ((result.config.get("planar") or {}).get("folder"), _option("planar_dir")):
         if d and Path(str(d)).is_dir() and (Path(str(d)) / ro.OVERLAY_FILE).exists():
             return str(d)
     return None
@@ -222,5 +251,7 @@ def _reference_folder(result):
 
 def _chainage_range(result):
     d = result.facade_depth
+    if d is None:                              # a cloud without colour has no facade images: the wall line's length
+        return 0.0, float(result.wall_frame.length)
     u0 = float(d.transform.c)
     return u0, u0 + d.array.shape[2] * abs(d.transform.a)
